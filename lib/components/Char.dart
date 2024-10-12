@@ -10,6 +10,7 @@ class KLineChart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     List<int> tdCounts = _calculateTDCounts(stockData);
+    List<int> tsCounts = _calculateTSCounts(stockData);
     double chartWidth =
         MediaQuery.of(context).size.width * (stockData.length / 10);
 
@@ -32,6 +33,7 @@ class KLineChart extends StatelessWidget {
                     double close = data.close;
                     bool isBull = open < close;
                     int tdCount = tdCounts[index];
+                    int tsCount = tsCounts[index];
                     return MapEntry(
                       index,
                       BarChartGroupData(
@@ -51,9 +53,7 @@ class KLineChart extends StatelessWidget {
                                 color: Colors.grey[300]!,
                               )),
                         ],
-                        showingTooltipIndicators: [
-                          0
-                        ], // Add index here to show tooltip
+                        showingTooltipIndicators: [0],
                       ),
                     );
                   })
@@ -79,20 +79,23 @@ class KLineChart extends StatelessWidget {
                   tooltipMargin: 5,
                   tooltipBorder: BorderSide(color: Colors.grey),
                   getTooltipItem: (group, groupIndex, rod, rodIndex) {
-                    final int count = tdCounts[group.x.toInt()];
-                    if (count == 9) {
+                    final int tdCount = tdCounts[group.x.toInt()];
+                    final int tsCount = tsCounts[group.x.toInt()];
+                    if (tdCount == 9) {
                       return BarTooltipItem(
-                        "${rod.toY > rod.fromY ? '⚡' : '💎'} $count",
-                        TextStyle(
-                            color: rod.toY > rod.fromY
-                                ? Colors.green
-                                : Colors.red),
+                        '⚡ $tdCount', // 鑽石符號代表多頭信號
+                        TextStyle(color: Colors.green),
+                      );
+                    } else if (tsCount == 9) {
+                      return BarTooltipItem(
+                        '💎 $tsCount', // 閃電符號代表空頭信號
+                        TextStyle(color: Colors.red),
                       );
                     } else {
+                      TextStyle style = TextStyle(
+                          color: tdCount > 0 ? Colors.red : Colors.green);
                       return BarTooltipItem(
-                        "$count",
-                        TextStyle(color: Colors.blue),
-                      );
+                          "${tdCount > 0 ? tdCount : tsCount}", style);
                     }
                   },
                 ),
@@ -111,13 +114,25 @@ class KLineChart extends StatelessWidget {
     for (int i = 4; i < data.length; i++) {
       if (data[i].close > data[i - 4].close) {
         count = count < 9 ? count + 1 : 1;
-      } else if (data[i].close < data[i - 4].close) {
-        count = count < 9 ? count + 1 : 1;
       } else {
-        count = 0; // Reset on no trend continuation
+        count = 0;
       }
       tdCounts[i] = count;
     }
     return tdCounts;
+  }
+
+  List<int> _calculateTSCounts(List<StockData> data) {
+    List<int> tsCounts = List.filled(data.length, 0);
+    int count = 0;
+    for (int i = 4; i < data.length; i++) {
+      if (data[i].close < data[i - 4].close) {
+        count = count < 9 ? count + 1 : 1;
+      } else {
+        count = 0;
+      }
+      tsCounts[i] = count;
+    }
+    return tsCounts;
   }
 }
