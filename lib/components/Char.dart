@@ -25,7 +25,7 @@ class KLineChart extends StatelessWidget {
                     fromY: open,
                     toY: close,
                     color: isBull ? Colors.green : Colors.red,
-                    width: 2, // 设定柱子的宽度
+                    width: 2, // 设置柱子的宽度
                     borderRadius:
                         BorderRadius.all(Radius.circular(2)), // 设置柱子的圆角
                     backDrawRodData: BackgroundBarChartRodData(
@@ -37,8 +37,16 @@ class KLineChart extends StatelessWidget {
               ],
             );
           }).toList(),
-          titlesData: FlTitlesData(show: false),
-          borderData: FlBorderData(show: false),
+          titlesData: FlTitlesData(
+            show: true,
+            topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(showTitles: false),
+            ),
+          ),
+          borderData: FlBorderData(show: true),
+          gridData: FlGridData(show: true),
         ),
       ),
     );

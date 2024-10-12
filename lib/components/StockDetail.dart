@@ -99,7 +99,7 @@ class _StockDetailState extends State<StockDetail> {
                     child: KLineChart(stockData: snapshot.data!), // 使用 K 线图组件
                   ),
                   Expanded(
-                    flex: 2,
+                    flex: 1,
                     child: ListView(
                       children: snapshot.data!
                           .map((data) => StockDataWidget(data))
