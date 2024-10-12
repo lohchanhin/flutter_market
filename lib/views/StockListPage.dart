@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import '../database/DatabaseHelper.dart'; // 确保导入正确
+import '../database/DatabaseHelper.dart'; // 確保導入正確
+import '../components/StockDetail.dart'; // 確保路徑正確
 
 class StockListPage extends StatefulWidget {
   @override
@@ -24,14 +25,14 @@ class _StockListPageState extends State<StockListPage> {
 
   void _removeStock(int id) async {
     await DatabaseHelper.instance.deleteStock(id);
-    _loadSavedStocks(); // 重新载入股票列表以更新UI
+    _loadSavedStocks(); // 重新載入股票列表以更新UI
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Saved Stocks'),
+        title: Text('已保存的股票'),
       ),
       body: ListView.builder(
         itemCount: _stocks.length,
@@ -40,6 +41,13 @@ class _StockListPageState extends State<StockListPage> {
           return ListTile(
             title: Text(stock['name']),
             subtitle: Text(stock['code']),
+            onTap: () {
+              // 导航到 StockDetail 页面
+              Navigator.of(context).push(MaterialPageRoute(
+                builder: (context) => StockDetail(
+                    stockCode: stock['code'], stockName: stock['name']),
+              ));
+            },
             trailing: IconButton(
               icon: Icon(Icons.delete),
               onPressed: () => _removeStock(stock['id']), // 添加移除按钮

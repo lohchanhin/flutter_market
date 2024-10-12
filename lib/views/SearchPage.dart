@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
-import 'package:string_similarity/string_similarity.dart'; // 導入相似度計算庫
+import 'package:string_similarity/string_similarity.dart'; // 导入相似度计算库
 import '../components/SearchBar.dart';
 import '../database/DatabaseHelper.dart';
+import '../components/StockDetail.dart'; // Ensure this import is correct
 
 class SearchPage extends StatefulWidget {
   @override
@@ -34,7 +35,7 @@ class _SearchPageState extends State<SearchPage> {
   void _handleSearch(String query) {
     List<dynamic> results = [];
     if (query.isEmpty) {
-      results = []; // 當搜尋框為空時，不顯示任何結果
+      results = [];
     } else {
       results = _stocks.where((stock) {
         final String name = stock['名稱'].toLowerCase();
@@ -66,18 +67,18 @@ class _SearchPageState extends State<SearchPage> {
                 : ListView.builder(
                     itemCount: _filteredStocks.length,
                     itemBuilder: (context, index) {
+                      final stock = _filteredStocks[index];
                       return ListTile(
-                        title: Text(_filteredStocks[index]['名稱']),
-                        subtitle: Text(_filteredStocks[index]['代號']),
+                        title: Text(stock['名稱']),
+                        subtitle: Text(stock['代號']),
                         trailing: IconButton(
-                            onPressed: () {
-                              final stock = {
-                                'code': _filteredStocks[index]['代號'],
-                                'name': _filteredStocks[index]['名稱']
-                              };
-                              DatabaseHelper.instance.addStock(stock);
-                            },
-                            icon: Icon(Icons.add)),
+                          icon: Icon(Icons.add),
+                          onPressed: () {
+                            // Add stock to the database
+                            DatabaseHelper.instance.addStock(
+                                {'code': stock['代號'], 'name': stock['名稱']});
+                          },
+                        ),
                       );
                     },
                   ),
