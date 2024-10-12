@@ -1,27 +1,52 @@
 import 'package:flutter/material.dart';
-import '../components/StockList.dart'; // 確保導入正確
+import '../database/DatabaseHelper.dart'; // 确保导入正确
 
-class StockListPage extends StatelessWidget {
-  StockListPage({Key? key}) : super(key: key);
+class StockListPage extends StatefulWidget {
+  @override
+  _StockListPageState createState() => _StockListPageState();
+}
 
-  final List<Map<String, String>> stocks = [
-    {"code": "0001", "name": "Example Corp"},
-    {"code": "0002", "name": "Another Inc"},
-    // 添加更多股票數據
-  ];
+class _StockListPageState extends State<StockListPage> {
+  List<Map<String, dynamic>> _stocks = [];
 
-  void _selectStock(Map<String, String> stock) {
-    // 處理股票選擇，如導航到詳細頁面
-    print("Selected stock: ${stock['name']}");
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedStocks();
+  }
+
+  Future<void> _loadSavedStocks() async {
+    final stocks = await DatabaseHelper.instance.getStocks();
+    setState(() {
+      _stocks = stocks;
+    });
+  }
+
+  void _removeStock(int id) async {
+    await DatabaseHelper.instance.deleteStock(id);
+    _loadSavedStocks(); // 重新载入股票列表以更新UI
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Stock List'),
+        title: Text('Saved Stocks'),
       ),
-      body: StockList(stocks: stocks, onSelect: _selectStock),
+      body: ListView.builder(
+        itemCount: _stocks.length,
+        itemBuilder: (context, index) {
+          final stock = _stocks[index];
+          return ListTile(
+            title: Text(stock['name']),
+            subtitle: Text(stock['code']),
+            trailing: IconButton(
+              icon: Icon(Icons.delete),
+              onPressed: () => _removeStock(stock['id']), // 添加移除按钮
+            ),
+          );
+        },
+      ),
     );
   }
 }

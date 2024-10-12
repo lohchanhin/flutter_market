@@ -3,6 +3,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
 import 'package:string_similarity/string_similarity.dart'; // 導入相似度計算庫
 import '../components/SearchBar.dart';
+import '../database/DatabaseHelper.dart';
 
 class SearchPage extends StatefulWidget {
   @override
@@ -68,6 +69,15 @@ class _SearchPageState extends State<SearchPage> {
                       return ListTile(
                         title: Text(_filteredStocks[index]['名稱']),
                         subtitle: Text(_filteredStocks[index]['代號']),
+                        trailing: IconButton(
+                            onPressed: () {
+                              final stock = {
+                                'code': _filteredStocks[index]['代號'],
+                                'name': _filteredStocks[index]['名稱']
+                              };
+                              DatabaseHelper.instance.addStock(stock);
+                            },
+                            icon: Icon(Icons.add)),
                       );
                     },
                   ),
