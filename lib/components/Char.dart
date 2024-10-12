@@ -4,15 +4,27 @@ import '../components/StockDetail.dart';
 
 class KLineChart extends StatelessWidget {
   final List<StockData> stockData;
+  final Function(List<StockData>)
+      onSignalData; // Add the callback function parameter
 
-  const KLineChart({Key? key, required this.stockData}) : super(key: key);
+  const KLineChart(
+      {Key? key, required this.stockData, required this.onSignalData})
+      : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     List<int> tdCounts = _calculateTDCounts(stockData);
     List<int> tsCounts = _calculateTSCounts(stockData);
+    List<StockData> signalDays = []; // List to collect signal days
+
     double chartWidth =
         MediaQuery.of(context).size.width * (stockData.length / 10);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (signalDays.isNotEmpty) {
+        onSignalData(signalDays); // 回調函數發送信號數據
+      }
+    });
 
     return Container(
       height: 400,
@@ -32,8 +44,17 @@ class KLineChart extends StatelessWidget {
                     double open = data.open;
                     double close = data.close;
                     bool isBull = open < close;
+
                     int tdCount = tdCounts[index];
                     int tsCount = tsCounts[index];
+
+                    // Check if it's a signal day and collect it
+                    if (tdCount == 9 || tsCount == 9) {
+                      data.isBullishSignal = tdCount == 9;
+                      data.isBearishSignal = tsCount == 9;
+                      signalDays.add(data); // Add to signal days list
+                    }
+
                     return MapEntry(
                       index,
                       BarChartGroupData(

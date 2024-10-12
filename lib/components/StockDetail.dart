@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' show parse;
-import 'package:html/dom.dart' as html; // 使用前缀来避免命名冲突
 import 'package:intl/intl.dart'; // 用于格式化日期
 import '../components/Char.dart'; // 确保路径正确
 
@@ -19,6 +18,13 @@ class StockDetail extends StatefulWidget {
 
 class _StockDetailState extends State<StockDetail> {
   late Future<List<StockData>> futureStockData;
+  List<StockData> signalDays = []; // 保存含有信號的股票數據
+
+  void handleSignalData(List<StockData> signals) {
+    setState(() {
+      signalDays = signals; // 更新含有信號的股票數據
+    });
+  }
 
   @override
   void initState() {
@@ -28,7 +34,6 @@ class _StockDetailState extends State<StockDetail> {
 
   Future<List<StockData>> fetchStockHistory(String stockCode) async {
     String url = 'https://finance.yahoo.com/quote/$stockCode.TW/history/';
-    print('Fetching URL: $url');
     var headers = {
       'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
@@ -38,25 +43,21 @@ class _StockDetailState extends State<StockDetail> {
       var document = parse(response.body);
       var rows = document.querySelectorAll('table tbody tr');
       List<StockData> stockDataList = [];
-      DateTime sixMonthsAgo = DateTime.now().subtract(Duration(days: 180));
       DateFormat format = DateFormat('MMM dd, yyyy');
-
       for (var row in rows) {
         var cells = row.querySelectorAll('td');
         if (cells.length > 6) {
           try {
             DateTime date = format.parse(cells[0].text.trim());
-            if (date.isAfter(sixMonthsAgo)) {
-              StockData stockData = StockData(
-                  date: cells[0].text.trim(),
-                  open: double.parse(cells[1].text.trim()),
-                  high: double.parse(cells[2].text.trim()),
-                  low: double.parse(cells[3].text.trim()),
-                  close: double.parse(cells[4].text.trim()),
-                  adjClose: double.parse(cells[5].text.trim()),
-                  volume: int.parse(cells[6].text.trim().replaceAll(',', '')));
-              stockDataList.add(stockData);
-            }
+            StockData stockData = StockData(
+                date: cells[0].text.trim(),
+                open: double.parse(cells[1].text.trim()),
+                high: double.parse(cells[2].text.trim()),
+                low: double.parse(cells[3].text.trim()),
+                close: double.parse(cells[4].text.trim()),
+                adjClose: double.parse(cells[5].text.trim()),
+                volume: int.parse(cells[6].text.trim().replaceAll(',', '')));
+            stockDataList.add(stockData);
           } catch (e) {
             print('Error parsing data for row: ${row.innerHtml}');
           }
@@ -84,14 +85,20 @@ class _StockDetailState extends State<StockDetail> {
               return Column(
                 children: [
                   Expanded(
-                    flex: 1,
-                    child: KLineChart(stockData: snapshot.data!), // 使用 K 线图组件
-                  ),
+                      flex: 1,
+                      child: KLineChart(
+                          stockData: snapshot.data!,
+                          onSignalData: handleSignalData)),
                   Expanded(
                     flex: 1,
                     child: ListView(
-                      children: snapshot.data!
-                          .map((data) => StockDataWidget(data))
+                      children: signalDays
+                          .map((data) => ListTile(
+                                title: Text(
+                                    '${data.date} ${data.isBullishSignal! ? "閃電" : "鑽石"}'),
+                                subtitle: Text(
+                                    'Open: ${data.open}, Close: ${data.close}'),
+                              ))
                           .toList(),
                     ),
                   ),
