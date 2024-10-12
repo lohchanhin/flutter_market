@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' show parse;
-import 'package:html/dom.dart' as html; // 使用前綴來避免命名衝突
-import 'package:intl/intl.dart'; // 用於格式化日期
-import '../components/Char.dart';
+import 'package:html/dom.dart' as html; // 使用前缀来避免命名冲突
+import 'package:intl/intl.dart'; // 用于格式化日期
+import '../components/Char.dart'; // 确保路径正确
 
 class StockDetail extends StatefulWidget {
   final String stockCode;
@@ -34,47 +34,36 @@ class _StockDetailState extends State<StockDetail> {
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
     };
     var response = await http.get(Uri.parse(url), headers: headers);
-    print(response.statusCode);
     if (response.statusCode == 200) {
-      print('Received successful response');
       var document = parse(response.body);
       var rows = document.querySelectorAll('table tbody tr');
-
       List<StockData> stockDataList = [];
-      DateTime sixMonthsAgo =
-          DateTime.now().subtract(Duration(days: 180)); // 定义六个月前的日期
-      DateFormat format = DateFormat('MMM dd, yyyy'); // 定义美国格式的日期
+      DateTime sixMonthsAgo = DateTime.now().subtract(Duration(days: 180));
+      DateFormat format = DateFormat('MMM dd, yyyy');
 
       for (var row in rows) {
         var cells = row.querySelectorAll('td');
         if (cells.length > 6) {
           try {
-            DateTime date = format.parse(cells[0].text.trim()); // 解析日期
+            DateTime date = format.parse(cells[0].text.trim());
             if (date.isAfter(sixMonthsAgo)) {
-              // 检查日期是否在六个月内
               StockData stockData = StockData(
-                date: cells[0].text.trim(),
-                open: double.parse(cells[1].text.trim()),
-                high: double.parse(cells[2].text.trim()),
-                low: double.parse(cells[3].text.trim()),
-                close: double.parse(cells[4].text.trim()),
-                adjClose: double.parse(cells[5].text.trim()),
-                volume: int.parse(cells[6].text.trim().replaceAll(',', '')),
-              );
+                  date: cells[0].text.trim(),
+                  open: double.parse(cells[1].text.trim()),
+                  high: double.parse(cells[2].text.trim()),
+                  low: double.parse(cells[3].text.trim()),
+                  close: double.parse(cells[4].text.trim()),
+                  adjClose: double.parse(cells[5].text.trim()),
+                  volume: int.parse(cells[6].text.trim().replaceAll(',', '')));
               stockDataList.add(stockData);
-              print('Added stock data: $stockData');
             }
           } catch (e) {
             print('Error parsing data for row: ${row.innerHtml}');
-            print('Exception: $e');
           }
-        } else {
-          print('Row does not contain enough data: ${row.innerHtml}');
         }
       }
       return stockDataList.reversed.toList();
     } else {
-      print('Failed to load data, status code: ${response.statusCode}');
       throw Exception('Failed to load stock history data');
     }
   }
@@ -124,6 +113,9 @@ class StockData {
   final String date;
   final double open, high, low, close, adjClose;
   final int volume;
+  int? tdCount;
+  bool? isBullishSignal;
+  bool? isBearishSignal;
 
   StockData({
     required this.date,
@@ -133,6 +125,9 @@ class StockData {
     required this.close,
     required this.adjClose,
     required this.volume,
+    this.tdCount,
+    this.isBullishSignal,
+    this.isBearishSignal,
   });
 }
 
