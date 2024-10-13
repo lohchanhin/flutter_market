@@ -8,7 +8,7 @@ class NotificationSettingsPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Notification Settings'),
+        title: Text('設定'),
       ),
       body: Padding(
         padding: const EdgeInsets.all(8.0),

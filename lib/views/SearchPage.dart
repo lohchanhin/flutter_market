@@ -53,7 +53,7 @@ class _SearchPageState extends State<SearchPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Search Stocks'),
+        title: Text('股票搜尋'),
       ),
       body: Column(
         children: [
