@@ -48,7 +48,7 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('振興內測版本'),
+        title: const Text('內測版本'),
       ),
       body: Center(
         child: _widgetOptions.elementAt(_selectedIndex),

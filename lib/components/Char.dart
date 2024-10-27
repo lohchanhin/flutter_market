@@ -25,12 +25,12 @@ class _KLineChartState extends State<KLineChart> {
   @override
   void initState() {
     super.initState();
-    tdCounts = _calculateTDCounts(widget.stockData);
-    tsCounts = _calculateTSCounts(widget.stockData);
+    tdCounts = List.filled(widget.stockData.length, 0);
+    tsCounts = List.filled(widget.stockData.length, 0);
+    _calculateTDTSCounts(widget.stockData, tdCounts, tsCounts);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      widget.onSignalData(
-          signalDays); // Call the callback to pass signal data back
-      _scrollToEnd(); // Scrolls to the end after the frame is built
+      widget.onSignalData(signalDays); // 传递信号数据
+      _scrollToEnd(); // 滚动到末尾
     });
   }
 
@@ -103,10 +103,11 @@ class _KLineChartState extends State<KLineChart> {
           int tdCount = tdCounts[index];
           int tsCount = tsCounts[index];
 
+          // 判断是否有信号
           if (tdCount == 9 || tsCount == 9) {
             data.isBullishSignal = tdCount == 9;
             data.isBearishSignal = tsCount == 9;
-            signalDays.add(data); // Collecting days with signals
+            signalDays.add(data); // 收集有信号的日期
           }
 
           return MapEntry(
@@ -141,36 +142,44 @@ class _KLineChartState extends State<KLineChart> {
     final int tdCount = tdCounts[group.x.toInt()];
     final int tsCount = tsCounts[group.x.toInt()];
     if (tdCount == 9) {
-      return BarTooltipItem('⚡ $tdCount', TextStyle(color: Colors.green));
+      return BarTooltipItem('⚡ TD: $tdCount', TextStyle(color: Colors.green));
     } else if (tsCount == 9) {
-      return BarTooltipItem('💎 $tsCount', TextStyle(color: Colors.red));
+      return BarTooltipItem('💎 TS: $tsCount', TextStyle(color: Colors.red));
+    } else if (tdCount > 0) {
+      return BarTooltipItem('TD: $tdCount', TextStyle(color: Colors.green));
+    } else if (tsCount > 0) {
+      return BarTooltipItem('TS: $tsCount', TextStyle(color: Colors.red));
     } else {
-      return BarTooltipItem("${tdCount > 0 ? tdCount : tsCount}",
-          TextStyle(color: tdCount > 0 ? Colors.red : Colors.green));
+      return BarTooltipItem('', TextStyle());
     }
   }
 
-  List<int> _calculateTDCounts(List<StockData> data) {
-    List<int> tdCounts = List.filled(data.length, 0);
+  void _calculateTDTSCounts(
+      List<StockData> data, List<int> tdCounts, List<int> tsCounts) {
     for (int i = 4; i < data.length; i++) {
       if (data[i].close > data[i - 4].close) {
-        tdCounts[i] = (tdCounts[i - 1] < 9) ? tdCounts[i - 1] + 1 : 1;
+        // TD 条件满足
+        if (tsCounts[i - 1] > 0 ||
+            (tdCounts[i - 1] == 0 && tsCounts[i - 1] == 0)) {
+          // 从 TS 切换到 TD，或初始状态，TD 计数从 1 开始
+          tdCounts[i] = 1;
+        } else {
+          // 继续 TD 趋势，计数 +1
+          tdCounts[i] = (tdCounts[i - 1] >= 9) ? 1 : tdCounts[i - 1] + 1;
+        }
+        tsCounts[i] = 0; // 重置 TS 计数器
       } else {
-        tdCounts[i] = 0;
+        // TS 条件满足或等于
+        if (tdCounts[i - 1] > 0 ||
+            (tdCounts[i - 1] == 0 && tsCounts[i - 1] == 0)) {
+          // 从 TD 切换到 TS，或初始状态，TS 计数从 1 开始
+          tsCounts[i] = 1;
+        } else {
+          // 继续 TS 趋势，计数 +1
+          tsCounts[i] = (tsCounts[i - 1] >= 9) ? 1 : tsCounts[i - 1] + 1;
+        }
+        tdCounts[i] = 0; // 重置 TD 计数器
       }
     }
-    return tdCounts;
-  }
-
-  List<int> _calculateTSCounts(List<StockData> data) {
-    List<int> tsCounts = List.filled(data.length, 0);
-    for (int i = 4; i < data.length; i++) {
-      if (data[i].close < data[i - 4].close) {
-        tsCounts[i] = (tsCounts[i - 1] < 9) ? tsCounts[i - 1] + 1 : 1;
-      } else {
-        tsCounts[i] = 0;
-      }
-    }
-    return tsCounts;
   }
 }
