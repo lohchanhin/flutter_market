@@ -12,6 +12,8 @@ class StockListPage extends StatefulWidget {
 
 class _StockListPageState extends State<StockListPage> {
   List<Map<String, dynamic>> _stocks = [];
+  List<Map<String, dynamic>> _filteredStocks = [];
+  String _filter = 'All'; // 篩選條件: All, TD, TS
   bool _isUpdating = false; // 是否正在更新
   int _updateProgress = 0; // 更新进度
   int _totalStocks = 0; // 总的股票数量
@@ -26,6 +28,21 @@ class _StockListPageState extends State<StockListPage> {
     final stocks = await DatabaseHelper.instance.getStocks();
     setState(() {
       _stocks = stocks;
+      _applyFilter(); // 應用篩選條件
+    });
+  }
+
+  void _applyFilter() {
+    setState(() {
+      if (_filter == 'All') {
+        _filteredStocks = _stocks;
+      } else if (_filter == 'TD') {
+        _filteredStocks =
+            _stocks.where((stock) => stock['signal'] == '闪电').toList();
+      } else if (_filter == 'TS') {
+        _filteredStocks =
+            _stocks.where((stock) => stock['signal'] == '钻石').toList();
+      }
     });
   }
 
@@ -215,6 +232,22 @@ class _StockListPageState extends State<StockListPage> {
                   icon: Icon(Icons.update),
                   onPressed: _isUpdating ? null : _updateAllStocks,
                 ),
+          // 篩選下拉選單
+          DropdownButton<String>(
+            value: _filter,
+            items: [
+              DropdownMenuItem(value: 'All', child: Text('顯示全部')),
+              DropdownMenuItem(value: 'TD', child: Text('TD 信號')),
+              DropdownMenuItem(value: 'TS', child: Text('TS 信號')),
+            ],
+            onChanged: (value) {
+              setState(() {
+                _filter = value!;
+                _applyFilter();
+              });
+            },
+            underline: SizedBox(), // 移除下劃線
+          ),
         ],
       ),
       body: Column(
@@ -225,9 +258,9 @@ class _StockListPageState extends State<StockListPage> {
             ),
           Expanded(
             child: ListView.builder(
-              itemCount: _stocks.length,
+              itemCount: _filteredStocks.length,
               itemBuilder: (context, index) {
-                final stock = _stocks[index];
+                final stock = _filteredStocks[index];
                 return ListTile(
                   leading: _buildSignalIcon(stock['signal']),
                   title: Text(stock['name']),
