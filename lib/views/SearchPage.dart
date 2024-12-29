@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
-import 'package:string_similarity/string_similarity.dart'; // 导入相似度计算库
+// 导入相似度计算库
 import '../components/SearchBar.dart';
 import '../database/DatabaseHelper.dart';
-import '../components/StockDetail.dart'; // Ensure this import is correct
+// Ensure this import is correct
 
 class SearchPage extends StatefulWidget {
   @override

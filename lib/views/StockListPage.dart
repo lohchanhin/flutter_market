@@ -166,6 +166,7 @@ class _StockListPageState extends State<StockListPage> {
         var cells = row.querySelectorAll('td');
         if (cells.length > 6) {
           try {
+            // ignore: unused_local_variable
             DateTime date = format.parse(cells[0].text.trim());
             StockData stockData = StockData(
                 date: cells[0].text.trim(),
