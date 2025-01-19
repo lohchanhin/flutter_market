@@ -17,12 +17,14 @@ class DatabaseHelper {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
 
-    // 将数据库版本号增加到3
-    return await openDatabase(path,
-        version: 3, onCreate: _createDB, onUpgrade: _upgradeDB);
+    return await openDatabase(
+      path,
+      version: 4, // <-- 版本升級到 4
+      onCreate: _createDB,
+      onUpgrade: _upgradeDB,
+    );
   }
 
-  // 创建数据库时的逻辑
   Future _createDB(Database db, int version) async {
     await db.execute('''
       CREATE TABLE stocks (
@@ -35,9 +37,10 @@ class DatabaseHelper {
         tsCount INTEGER
       )
     ''');
+    // 第一次建表就加 freq 欄位
+    await db.execute('ALTER TABLE stocks ADD COLUMN freq TEXT');
   }
 
-  // 升级数据库时的逻辑
   Future _upgradeDB(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       await db.execute('ALTER TABLE stocks ADD COLUMN signal TEXT');
@@ -47,23 +50,32 @@ class DatabaseHelper {
       await db.execute('ALTER TABLE stocks ADD COLUMN tdCount INTEGER');
       await db.execute('ALTER TABLE stocks ADD COLUMN tsCount INTEGER');
     }
+    if (oldVersion < 4) {
+      // 加 freq 欄位
+      await db.execute('ALTER TABLE stocks ADD COLUMN freq TEXT');
+    }
   }
 
-  // 添加股票
+  // 新增股票（單筆）
   Future<int> addStock(Map<String, dynamic> stock) async {
     final db = await database;
     return await db.insert('stocks', stock);
   }
 
-  // 获取所有股票
+  // 取得所有股票
   Future<List<Map<String, dynamic>>> getStocks() async {
     final db = await database;
     return await db.query('stocks');
   }
 
-  // 更新股票的信号和更新时间
-  Future<int> updateStockSignal(int id, String? signal, String lastUpdate,
-      int tdCount, int tsCount) async {
+  // 更新股票的 signal/lastUpdate/tdCount/tsCount
+  Future<int> updateStockSignal(
+    int id,
+    String? signal,
+    String lastUpdate,
+    int tdCount,
+    int tsCount,
+  ) async {
     final db = await database;
     return await db.update(
       'stocks',
@@ -78,7 +90,7 @@ class DatabaseHelper {
     );
   }
 
-  // 删除股票
+  // 刪除 (用 id)
   Future<int> deleteStock(int id) async {
     final db = await database;
     return await db.delete(
@@ -86,6 +98,36 @@ class DatabaseHelper {
       where: 'id = ?',
       whereArgs: [id],
     );
+  }
+
+  // 刪除 (用 code)
+  Future<int> deleteStockByCode(String code) async {
+    final db = await database;
+    return await db.delete(
+      'stocks',
+      where: 'code = ?',
+      whereArgs: [code],
+    );
+  }
+
+  // 批次更新
+  Future<void> batchUpdateStocks(List<Map<String, dynamic>> updates) async {
+    final db = await instance.database;
+    await db.transaction((txn) async {
+      for (var item in updates) {
+        await txn.update(
+          'stocks',
+          {
+            'signal': item['signal'],
+            'lastUpdate': item['lastUpdate'],
+            'tdCount': item['tdCount'],
+            'tsCount': item['tsCount'],
+          },
+          where: 'id = ?',
+          whereArgs: [item['id']],
+        );
+      }
+    });
   }
 
   Future close() async {
