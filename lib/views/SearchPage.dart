@@ -13,7 +13,7 @@ class _SearchPageState extends State<SearchPage> {
   final TextEditingController _controller = TextEditingController();
   List<dynamic> _stocks = [];
   List<dynamic> _filteredStocks = [];
-  List<String> _addedStockCodes = []; // 已經加入 (可能包含 day/week？這裡只是看 code)
+  List<String> _addedStockCodes = []; // 已經加入 (只看 code)
   List<String> _selectedStocks = [];
   String _filter = 'All';
   bool _isProcessing = false; // 用於控制是否顯示處理中提示框
@@ -22,44 +22,54 @@ class _SearchPageState extends State<SearchPage> {
   void initState() {
     super.initState();
     _loadStockData();
-    _loadAddedStockCodes(); // 只會存放 'code'
+    _loadAddedStockCodes();
   }
 
   // (1) 載入本地 JSON: stocks_data.json
   Future<void> _loadStockData() async {
-    final String response =
-        await rootBundle.loadString('assets/stocks_data.json');
-    final data = await json.decode(response);
-    setState(() {
-      _stocks = data;
-      _applyFilter();
-    });
+    try {
+      final String response =
+          await rootBundle.loadString('assets/stocks_data.json');
+      // 假如 user 很快離開此頁，這時 widget 可能已 dispose
+      if (!mounted) return;
+      final data = json.decode(response);
+      setState(() {
+        _stocks = data;
+      });
+      _applyFilter(); // 有需要也可直接 setState 內部呼叫
+    } catch (e) {
+      // 可做錯誤處理
+      print('Error in _loadStockData: $e');
+    }
   }
 
-  // (2) 從資料庫抓到已添加的股票代號 (不分 freq)
+  // (2) 從資料庫抓已添加的股票代號
   Future<void> _loadAddedStockCodes() async {
-    final addedStocks = await DatabaseHelper.instance.getStocks();
-    // 注意：這裡可能會抓到日/週兩筆，但我們只記 code，後面用來判斷「是否已添加」
-    final codes =
-        addedStocks.map<String>((stock) => stock['code'] as String).toSet();
-    setState(() {
-      _addedStockCodes = codes.toList();
-    });
+    try {
+      final addedStocks = await DatabaseHelper.instance.getStocks();
+      if (!mounted) return;
+      final codes = addedStocks.map<String>((s) => s['code'] as String).toSet();
+      setState(() {
+        _addedStockCodes = codes.toList();
+      });
+    } catch (e) {
+      print('Error in _loadAddedStockCodes: $e');
+    }
   }
 
   // 搜尋處理
   void _handleSearch(String query) {
-    List<dynamic> results = [];
     if (query.isEmpty) {
-      results = _stocks;
-    } else {
-      results = _stocks.where((stock) {
-        final String name = stock['名稱'].toLowerCase();
-        final String code = stock['代號'].toLowerCase();
-        return name.contains(query.toLowerCase()) ||
-            code.contains(query.toLowerCase());
-      }).toList();
+      setState(() => _filteredStocks = _stocks);
+      _applyFilter();
+      return;
     }
+    List<dynamic> results = _stocks.where((stock) {
+      final String name = stock['名稱'].toLowerCase();
+      final String code = stock['代號'].toLowerCase();
+      return name.contains(query.toLowerCase()) ||
+          code.contains(query.toLowerCase());
+    }).toList();
     setState(() {
       _filteredStocks = results;
       _applyFilter();
@@ -72,14 +82,12 @@ class _SearchPageState extends State<SearchPage> {
     if (_filter == 'All') {
       results = _stocks;
     } else if (_filter == 'Added') {
-      results = _stocks
-          .where((stock) => _addedStockCodes.contains(stock['代號']))
-          .toList();
+      results =
+          _stocks.where((s) => _addedStockCodes.contains(s['代號'])).toList();
     } else {
-      // NotAdded
-      results = _stocks
-          .where((stock) => !_addedStockCodes.contains(stock['代號']))
-          .toList();
+      // 'NotAdded'
+      results =
+          _stocks.where((s) => !_addedStockCodes.contains(s['代號'])).toList();
     }
     setState(() {
       _filteredStocks = results;
@@ -88,9 +96,12 @@ class _SearchPageState extends State<SearchPage> {
 
   // 顯示 Snackbar
   void _showSnackbar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: Duration(seconds: 2)),
-    );
+    // 若要保險，也可先檢查 mounted
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), duration: Duration(seconds: 2)),
+      );
+    }
   }
 
   // 切換選擇
@@ -104,78 +115,89 @@ class _SearchPageState extends State<SearchPage> {
     });
   }
 
-  // ---------------------------
-  // 核心：一次建立「Day + Week」兩筆
-  // ---------------------------
+  // 一次建立「Day + Week」
   Future<void> _addStockDayWeek(String code, String name) async {
-    // (1) 先查資料庫：有沒有同 (code, freq='Day') ?
-    final dbStocks = await DatabaseHelper.instance.getStocks();
-    final alreadyHasDay = dbStocks.any(
-      (s) => s['code'] == code && s['freq'] == 'Day',
-    );
-    final alreadyHasWeek = dbStocks.any(
-      (s) => s['code'] == code && s['freq'] == 'Week',
-    );
+    try {
+      final dbStocks = await DatabaseHelper.instance.getStocks();
+      if (!mounted) return;
 
-    // (2) 若沒有，就插入
-    if (!alreadyHasDay) {
-      await DatabaseHelper.instance.addStock({
-        'code': code,
-        'name': name,
-        'freq': 'Day', // 關鍵
-      });
-    }
-    if (!alreadyHasWeek) {
-      await DatabaseHelper.instance.addStock({
-        'code': code,
-        'name': name,
-        'freq': 'Week', // 關鍵
-      });
-    }
+      final alreadyHasDay =
+          dbStocks.any((s) => s['code'] == code && s['freq'] == 'Day');
+      final alreadyHasWeek =
+          dbStocks.any((s) => s['code'] == code && s['freq'] == 'Week');
 
-    // (3) 重新載入 => 更新 _addedStockCodes
-    await _loadAddedStockCodes();
+      if (!alreadyHasDay) {
+        await DatabaseHelper.instance.addStock({
+          'code': code,
+          'name': name,
+          'freq': 'Day',
+        });
+      }
+      if (!alreadyHasWeek) {
+        await DatabaseHelper.instance.addStock({
+          'code': code,
+          'name': name,
+          'freq': 'Week',
+        });
+      }
+      // 重新載入
+      await _loadAddedStockCodes();
+    } catch (e) {
+      print('Error in _addStockDayWeek: $e');
+    }
   }
 
-  // ---------------------------
   // 全部添加
-  // ---------------------------
   Future<void> _addAllStocks() async {
     setState(() => _isProcessing = true);
-
-    int addedCount = 0;
-    for (var stock in _filteredStocks) {
-      if (!_addedStockCodes.contains(stock['代號'])) {
-        // 新增 (Day+Week)
-        await _addStockDayWeek(stock['代號'], stock['名稱']);
-        addedCount++;
+    try {
+      int addedCount = 0;
+      for (var stock in _filteredStocks) {
+        final code = stock['代號'];
+        if (!_addedStockCodes.contains(code)) {
+          // 新增 (Day+Week)
+          await _addStockDayWeek(code, stock['名稱']);
+          addedCount++;
+        }
       }
+      if (!mounted) return;
+      setState(() => _isProcessing = false);
+      _showSnackbar(addedCount > 0 ? '成功添加 $addedCount 個股票(含日/週)' : '沒有可添加的股票');
+    } catch (e) {
+      print('Error in _addAllStocks: $e');
+      if (!mounted) return;
+      setState(() => _isProcessing = false);
     }
-
-    setState(() => _isProcessing = false);
-    _showSnackbar(addedCount > 0 ? '成功添加 $addedCount 個股票(含日/週)' : '沒有可添加的股票');
   }
 
-  // ---------------------------
   // 全部移除
-  // ---------------------------
   Future<void> _removeAllStocks() async {
     setState(() => _isProcessing = true);
-
-    int removedCount = 0;
-    for (var stock in _filteredStocks) {
-      final code = stock['代號'];
-      // 直接把這個 code 全部刪掉 (包含日/週)
-      if (_addedStockCodes.contains(code)) {
-        await DatabaseHelper.instance.deleteStockByCode(code);
-        removedCount++;
+    try {
+      int removedCount = 0;
+      for (var stock in _filteredStocks) {
+        final code = stock['代號'];
+        if (_addedStockCodes.contains(code)) {
+          await DatabaseHelper.instance.deleteStockByCode(code);
+          removedCount++;
+        }
       }
+      // 刪完後重新載入
+      await _loadAddedStockCodes();
+      if (!mounted) return;
+      setState(() => _isProcessing = false);
+      _showSnackbar(removedCount > 0 ? '成功移除 $removedCount 個股票' : '沒有可移除的股票');
+    } catch (e) {
+      print('Error in _removeAllStocks: $e');
+      if (!mounted) return;
+      setState(() => _isProcessing = false);
     }
+  }
 
-    // 刪完後重新載入
-    await _loadAddedStockCodes();
-    setState(() => _isProcessing = false);
-    _showSnackbar(removedCount > 0 ? '成功移除 $removedCount 個股票' : '沒有可移除的股票');
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 
   @override
@@ -204,10 +226,12 @@ class _SearchPageState extends State<SearchPage> {
                   DropdownMenuItem(value: 'NotAdded', child: Text('未添加')),
                 ],
                 onChanged: (value) {
-                  setState(() {
-                    _filter = value!;
-                    _applyFilter();
-                  });
+                  if (value != null) {
+                    setState(() {
+                      _filter = value;
+                      _applyFilter();
+                    });
+                  }
                 },
                 underline: SizedBox(),
               ),
@@ -233,7 +257,6 @@ class _SearchPageState extends State<SearchPage> {
                           final stock = _filteredStocks[index];
                           final code = stock['代號'];
                           final name = stock['名稱'];
-
                           final isSelected = _selectedStocks.contains(code);
                           final isAdded = _addedStockCodes.contains(code);
 
@@ -256,7 +279,7 @@ class _SearchPageState extends State<SearchPage> {
                                           _showSnackbar('已添加 $code (日/週)');
                                         },
                                 ),
-                                // 勾選選擇
+                                // 多選
                                 IconButton(
                                   icon: Icon(
                                     isSelected
@@ -273,14 +296,15 @@ class _SearchPageState extends State<SearchPage> {
               ),
             ],
           ),
-          // 浮動按鈕：批量添加選定
           floatingActionButton: _selectedStocks.isNotEmpty
               ? FloatingActionButton(
                   onPressed: () async {
+                    // 批量添加選定
                     for (var code in _selectedStocks) {
                       final stock = _stocks.firstWhere((s) => s['代號'] == code);
                       await _addStockDayWeek(stock['代號'], stock['名稱']);
                     }
+                    if (!mounted) return;
                     setState(() {
                       _selectedStocks.clear();
                     });

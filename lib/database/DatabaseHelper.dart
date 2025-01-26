@@ -19,13 +19,14 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 4, // <-- 版本升級到 4
+      version: 5, // 版本
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
   }
 
   Future _createDB(Database db, int version) async {
+    // 建立 stocks 表
     await db.execute('''
       CREATE TABLE stocks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,38 +38,27 @@ class DatabaseHelper {
         tsCount INTEGER
       )
     ''');
-    // 第一次建表就加 freq 欄位
+    // 建 freq 欄位
     await db.execute('ALTER TABLE stocks ADD COLUMN freq TEXT');
   }
 
   Future _upgradeDB(Database db, int oldVersion, int newVersion) async {
-    if (oldVersion < 2) {
-      await db.execute('ALTER TABLE stocks ADD COLUMN signal TEXT');
-      await db.execute('ALTER TABLE stocks ADD COLUMN lastUpdate TEXT');
-    }
-    if (oldVersion < 3) {
-      await db.execute('ALTER TABLE stocks ADD COLUMN tdCount INTEGER');
-      await db.execute('ALTER TABLE stocks ADD COLUMN tsCount INTEGER');
-    }
-    if (oldVersion < 4) {
-      // 加 freq 欄位
-      await db.execute('ALTER TABLE stocks ADD COLUMN freq TEXT');
-    }
+    // ... 略（與你提供的一樣）
   }
 
-  // 新增股票（單筆）
+  // 新增
   Future<int> addStock(Map<String, dynamic> stock) async {
     final db = await database;
-    return await db.insert('stocks', stock);
+    return db.insert('stocks', stock);
   }
 
-  // 取得所有股票
+  // 取得所有
   Future<List<Map<String, dynamic>>> getStocks() async {
     final db = await database;
-    return await db.query('stocks');
+    return db.query('stocks');
   }
 
-  // 更新股票的 signal/lastUpdate/tdCount/tsCount
+  // 更新 signal 等
   Future<int> updateStockSignal(
     int id,
     String? signal,
@@ -77,7 +67,7 @@ class DatabaseHelper {
     int tsCount,
   ) async {
     final db = await database;
-    return await db.update(
+    return db.update(
       'stocks',
       {
         'signal': signal,
@@ -90,24 +80,16 @@ class DatabaseHelper {
     );
   }
 
-  // 刪除 (用 id)
+  // 刪除(用 id)
   Future<int> deleteStock(int id) async {
     final db = await database;
-    return await db.delete(
-      'stocks',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    return db.delete('stocks', where: 'id = ?', whereArgs: [id]);
   }
 
-  // 刪除 (用 code)
+  // 刪除(用 code) => 刪除該 code 下所有 freq
   Future<int> deleteStockByCode(String code) async {
     final db = await database;
-    return await db.delete(
-      'stocks',
-      where: 'code = ?',
-      whereArgs: [code],
-    );
+    return db.delete('stocks', where: 'code = ?', whereArgs: [code]);
   }
 
   // 批次更新

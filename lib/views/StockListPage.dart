@@ -1,55 +1,31 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
-import 'dart:ui' as ui; // 用於 BackdropFilter
 import 'package:intl/intl.dart';
+import 'dart:ui' as ui;
 
 import '../database/DatabaseHelper.dart';
+import '../services/api_service.dart';
 import '../components/StockDetail.dart';
 
-// --------------------------
-// Model: StockData
-// --------------------------
-class StockData {
-  final String date;
-  final double open, high, low, close, adjClose;
-  final int volume;
-  int? tdCount;
-  bool? isBullishSignal;
-  bool? isBearishSignal;
-
-  StockData({
-    required this.date,
-    required this.open,
-    required this.high,
-    required this.low,
-    required this.close,
-    required this.adjClose,
-    required this.volume,
-    this.tdCount,
-    this.isBullishSignal,
-    this.isBearishSignal,
-  });
-}
-
-// --------------------------
-// Page: StockListPage
-// --------------------------
 class StockListPage extends StatefulWidget {
   @override
   _StockListPageState createState() => _StockListPageState();
 }
 
 class _StockListPageState extends State<StockListPage> {
-  List<Map<String, dynamic>> _stocks = [];
-  List<Map<String, dynamic>> _filteredStocks = [];
+  // 本地 DB
+  final DatabaseHelper dbHelper = DatabaseHelper.instance;
+  // 後端 API
+  final ApiService api = ApiService();
 
-  String _filterSignal = 'All'; // 篩選條件: All, TD, TS
-  String _filterFreq = 'Day'; // 篩選週期: Day, Week, All
+  List<Map<String, dynamic>> _stocks = []; // 本地 DB 所有股票
+  List<Map<String, dynamic>> _filteredStocks = []; // 篩選後列表
+
+  String _filterSignal = 'All'; // 篩選信號: All, TD(=闪电), TS(=钻石)
+  String _filterFreq = 'All'; // 篩選週期: All, Day, Week
 
   bool _isUpdating = false; // 是否正在更新
-  int _updateProgress = 0; // 更新進度
-  int _totalStocks = 0; // 總的股票數量
+  int _updateProgress = 0;
+  int _totalStocks = 0;
 
   @override
   void initState() {
@@ -57,342 +33,157 @@ class _StockListPageState extends State<StockListPage> {
     _loadSavedStocks();
   }
 
-  // 載入所有股票(含 freq)
+  // 1) 從本地 SQLite 載入
   Future<void> _loadSavedStocks() async {
-    final stocks = await DatabaseHelper.instance.getStocks();
-    setState(() {
-      _stocks = stocks;
+    try {
+      final localStocks = await dbHelper.getStocks();
+      setState(() {
+        _stocks = localStocks;
+      });
       _applyFilter();
-    });
-  }
-
-  // 依照 signal + freq 下拉的選擇，過濾出要顯示的股票
-  void _applyFilter() {
-    setState(() {
-      // 1) 先依照 freq 過濾
-      List<Map<String, dynamic>> temp;
-      if (_filterFreq == 'All') {
-        temp = _stocks;
-      } else {
-        temp = _stocks.where((s) => s['freq'] == _filterFreq).toList();
+    } catch (e) {
+      print('Error loading local stocks: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('載入本地股票失敗: $e')),
+        );
       }
-
-      // 2) 再依照 signal 過濾
-      if (_filterSignal == 'All') {
-        _filteredStocks = temp;
-      } else if (_filterSignal == 'TD') {
-        _filteredStocks =
-            temp.where((stock) => stock['signal'] == '闪电').toList();
-      } else if (_filterSignal == 'TS') {
-        _filteredStocks =
-            temp.where((stock) => stock['signal'] == '钻石').toList();
-      }
-    });
-  }
-
-  void _removeStock(int id) async {
-    await DatabaseHelper.instance.deleteStock(id);
-    _loadSavedStocks();
-  }
-
-  // 格式化 "最後更新" 文字
-  String _formatLastUpdate(String? lastUpdate) {
-    if (lastUpdate == null) {
-      return '未更新';
-    } else {
-      DateTime dateTime = DateTime.parse(lastUpdate);
-      String formattedDate = DateFormat('yyyy-MM-dd HH:mm').format(dateTime);
-      return '最後更新：$formattedDate';
     }
   }
 
-  // 根據 signal 顯示 icon
+  // 2) 前端篩選
+  void _applyFilter() {
+    List<Map<String, dynamic>> temp = _stocks;
+    if (_filterFreq != 'All') {
+      temp = temp.where((s) => s['freq'] == _filterFreq).toList();
+    }
+    if (_filterSignal == 'TD') {
+      temp = temp.where((stock) => stock['signal'] == '闪电').toList();
+    } else if (_filterSignal == 'TS') {
+      temp = temp.where((stock) => stock['signal'] == '钻石').toList();
+    }
+    setState(() {
+      _filteredStocks = temp;
+    });
+  }
+
+  // 3) 刪除本地資料
+  Future<void> _removeStock(int localId) async {
+    try {
+      await dbHelper.deleteStock(localId);
+      await _loadSavedStocks();
+    } catch (e) {
+      print('Error removing local stock: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('刪除失敗: $e')),
+        );
+      }
+    }
+  }
+
+  // 4) 按下「全部更新」=> 後端批次 => 拿最新 => 同步到本地
+  Future<void> _updateAllStocks() async {
+    setState(() {
+      _isUpdating = true;
+      _updateProgress = 0;
+      _totalStocks = _filteredStocks.length; // 可作假進度
+    });
+
+    try {
+      // (A) 呼叫後端「更新全部」
+      // await api.updateAllStocks();
+
+      // (B) 從後端取得最新列表
+      final remoteList = await api.getAllStocks();
+      // remoteList: [ { id, code, name, freq, signal, tdCount, tsCount, lastUpdate }, ... ]
+
+      // (C) 與本地對照 (code+freq)
+      final updates = <Map<String, dynamic>>[];
+      final localAll = await dbHelper.getStocks(); // 重新抓取全部
+      final Map<String, int> mapCodeFreqToId = {};
+      for (var loc in localAll) {
+        final c = loc['code'];
+        final f = loc['freq'];
+        final lid = loc['id'];
+        final key = '$c|$f';
+        mapCodeFreqToId[key] = lid;
+      }
+
+      for (var remote in remoteList) {
+        final code = remote['code'];
+        final freq = remote['freq'];
+        final key = '$code|$freq';
+        if (mapCodeFreqToId.containsKey(key)) {
+          final localId = mapCodeFreqToId[key];
+          updates.add({
+            'id': localId,
+            'signal': remote['signal'],
+            'lastUpdate': remote['lastUpdate'] ?? DateTime.now().toString(),
+            'tdCount': remote['tdCount'] ?? 0,
+            'tsCount': remote['tsCount'] ?? 0,
+          });
+        }
+      }
+
+      // (D) batchUpdateStocks
+      if (updates.isNotEmpty) {
+        await dbHelper.batchUpdateStocks(updates);
+      }
+
+      // (E) 重新載入 + 提示
+      await _loadSavedStocks();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('所有股票已更新')),
+        );
+      }
+    } catch (e) {
+      print('Error in _updateAllStocks: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('更新失敗: $e')),
+        );
+      }
+    }
+
+    setState(() {
+      _isUpdating = false;
+    });
+  }
+
+  // 幫助函式：格式化日期
+  String _formatLastUpdate(String? lastUpdate) {
+    if (lastUpdate == null) return '未更新';
+    final dt = DateTime.parse(lastUpdate);
+    return '最後更新：${DateFormat('yyyy-MM-dd HH:mm').format(dt)}';
+  }
+
+  // 幫助函式：根據 signal 顯示 icon
   Widget _buildSignalIcon(String? signal) {
     if (signal == '闪电') {
       return Icon(Icons.flash_on, color: Colors.green);
     } else if (signal == '钻石') {
       return Icon(Icons.diamond, color: Colors.red);
-    } else {
-      return Icon(Icons.do_not_disturb, color: Colors.grey);
     }
+    return Icon(Icons.do_not_disturb, color: Colors.grey);
   }
 
-  // --------------------------
-  // (按「更新全部」) -> 更新當前篩選後的股票
-  // --------------------------
-  Future<void> _updateAllStocks() async {
-    setState(() {
-      _isUpdating = true;
-      _updateProgress = 0;
-    });
-
-    // 只更新當前 _filteredStocks 中的股票
-    final updatingStocks = List<Map<String, dynamic>>.from(_filteredStocks);
-    setState(() {
-      _totalStocks = updatingStocks.length;
-    });
-
-    // 暫存更新結果
-    List<Map<String, dynamic>> updateResults = [];
-
-    for (var stock in updatingStocks) {
-      // 1) 只做網路或邏輯計算，先不要直接寫 DB
-      var result = await _fetchAndCalculateSignal(
-        stock['code'],
-        stock['freq'] ?? 'Day',
-      );
-      String lastUpdate = DateTime.now().toString();
-      updateResults.add({
-        'id': stock['id'],
-        'signal': result['signal'],
-        'lastUpdate': lastUpdate,
-        'tdCount': result['tdCount'],
-        'tsCount': result['tsCount'],
-      });
-
-      // 可用 setState() 顯示進度
-      setState(() {
-        _updateProgress++;
-      });
-    }
-
-    // 2) 統一寫入資料庫
-    await DatabaseHelper.instance.batchUpdateStocks(updateResults);
-
-    // 3) 重新載入
-    await _loadSavedStocks();
-
-    setState(() {
-      _isUpdating = false;
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('所有股票已更新')),
-    );
-  }
-
-  // (可選) 更新單一支股票
-  Future<void> _updateSingleStock(Map<String, dynamic> stock) async {
-    int id = stock['id'];
-    String code = stock['code'];
-    String freq = stock['freq'] ?? 'Day';
-
-    var result = await _fetchAndCalculateSignal(code, freq);
-    String lastUpdate = DateTime.now().toString();
-
-    await DatabaseHelper.instance.updateStockSignal(
-      id,
-      result['signal'],
-      lastUpdate,
-      result['tdCount'],
-      result['tsCount'],
-    );
-
-    setState(() {
-      _updateProgress++;
-    });
-  }
-
-  // ---------------------------------------------------
-  // 核心：抓 FinMind API (日 or 週) -> TD/TS 計算
-  // ---------------------------------------------------
-  Future<Map<String, dynamic>> _fetchAndCalculateSignal(
-    String stockCode,
-    String freq,
-  ) async {
-    try {
-      // 1) 計算一年前的日期，格式化成 yyyy-MM-dd
-      final now = DateTime.now();
-      final oneYearAgo = DateTime(now.year - 1, now.month, now.day);
-      final formattedStartDate = DateFormat('yyyy-MM-dd').format(oneYearAgo);
-
-      // 2) 根據 freq 決定要用 day or week dataset
-      final dataset =
-          (freq == 'Week') ? 'TaiwanStockWeekPrice' : 'TaiwanStockPrice';
-
-      // 3) 撈 FinMind 資料
-      const token =
-          'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNS0wMS0xMCAwMTo0ODoyNyIsInVzZXJfaWQiOiJsb2hjaGFuaGluIiwiaXAiOiIxLjE2MC4xNjkuMTAwIn0.PWmTcSC8DeZsspyTOZf6qMXO6GjlhGNG655IBxByfWs'; // <-- 請換成你的 token
-      final stockData = await fetchStockHistoryFromFinMind(
-        stockCode: stockCode,
-        dataset: dataset,
-        token: token,
-        startDate: formattedStartDate,
-      );
-
-      // 4) TD/TS 計算
-      List<int> tdCounts = List.filled(stockData.length, 0);
-      List<int> tsCounts = List.filled(stockData.length, 0);
-      _calculateTDTSCounts(stockData, tdCounts, tsCounts);
-
-      int lastIndex = stockData.length - 1;
-      int currentTDCount = tdCounts[lastIndex];
-      int currentTSCount = tsCounts[lastIndex];
-
-      String? signal;
-      if (currentTDCount == 9) {
-        signal = '闪电';
-      } else if (currentTSCount == 9) {
-        signal = '钻石';
-      }
-
-      return {
-        'signal': signal,
-        'tdCount': currentTDCount,
-        'tsCount': currentTSCount,
-      };
-    } catch (e) {
-      print('Error fetching or calculating signal for $stockCode: $e');
-      return {
-        'signal': null,
-        'tdCount': 0,
-        'tsCount': 0,
-      };
-    }
-  }
-
-  // ---------------------------------------------------
-  // 用 FinMind API 撈資料 (處理日/週欄位差異 + null 檢查)
-  // ---------------------------------------------------
-  Future<List<StockData>> fetchStockHistoryFromFinMind({
-    required String stockCode,
-    required String dataset, // TaiwanStockPrice / TaiwanStockWeekPrice
-    required String token,
-    required String startDate,
-  }) async {
-    final url = Uri.parse(
-      'https://api.finmindtrade.com/api/v4/data?'
-      'dataset=$dataset&'
-      'data_id=$stockCode&'
-      'start_date=$startDate&'
-      'token=$token',
-    );
-    final response = await http.get(url);
-    if (response.statusCode == 200) {
-      final Map<String, dynamic> jsonResponse = jsonDecode(response.body);
-      if (jsonResponse['status'] == 200) {
-        final List<dynamic> dataList = jsonResponse['data'];
-        List<StockData> stockDataList = [];
-
-        // 判斷週線 / 日線，對應不同欄位
-        final bool isWeek = (dataset == 'TaiwanStockWeekPrice');
-
-        for (var item in dataList) {
-          final date = item['date'];
-          final open = item['open'];
-          final high = item['max'];
-          final low = item['min'];
-          final close = item['close'];
-
-          // 週線: 'trading_volume' / 日線: 'Trading_Volume'
-          final volume =
-              isWeek ? item['trading_volume'] : item['Trading_Volume'];
-
-          // (1) 先檢查欄位是否為 null
-          if (date == null ||
-              open == null ||
-              high == null ||
-              low == null ||
-              close == null ||
-              volume == null) {
-            // 若任何關鍵數值是 null，就跳過這筆
-            // （或你可以選擇給預設值 0.0 / 0）
-            print('跳過 null 資料: $item');
-            continue;
-          }
-
-          // (2) 開始轉型
-          final dateStr = date as String;
-          final openVal = (open as num).toDouble();
-          final highVal = (high as num).toDouble();
-          final lowVal = (low as num).toDouble();
-          final closeVal = (close as num).toDouble();
-          final volVal = (volume as num).toInt();
-
-          // (3) 加入清單
-          stockDataList.add(
-            StockData(
-              date: dateStr,
-              open: openVal,
-              high: highVal,
-              low: lowVal,
-              close: closeVal,
-              adjClose: closeVal, // FinMind 沒有提供 adjClose，就用 close
-              volume: volVal,
-            ),
-          );
-        }
-
-        // FinMind 回傳通常是由舊到新，不需要 reversed()，視你 TD/TS 計算邏輯需求而定
-        return stockDataList;
-      } else {
-        throw Exception('FinMind 回傳異常: ${jsonResponse['info']}');
-      }
-    } else {
-      throw Exception('HTTP Error: ${response.statusCode}');
-    }
-  }
-
-  // ---------------------------------------------------
-  // TD/TS 計算邏輯
-  // ---------------------------------------------------
-  void _calculateTDTSCounts(
-    List<StockData> data,
-    List<int> tdCounts,
-    List<int> tsCounts,
-  ) {
-    for (int i = 4; i < data.length; i++) {
-      final close_i = data[i].close;
-      final close_i4 = data[i - 4].close;
-      final condition = close_i > close_i4;
-
-      // Debug: 看看運算流程
-      print(
-          '[i=$i] close_i=$close_i, close_i4=$close_i4, condition=$condition');
-
-      if (condition) {
-        // TD
-        if (tsCounts[i - 1] > 0 ||
-            (tdCounts[i - 1] == 0 && tsCounts[i - 1] == 0)) {
-          tdCounts[i] = 1;
-        } else {
-          tdCounts[i] = (tdCounts[i - 1] >= 9) ? 1 : tdCounts[i - 1] + 1;
-        }
-        tsCounts[i] = 0;
-      } else {
-        // TS
-        if (tdCounts[i - 1] > 0 ||
-            (tdCounts[i - 1] == 0 && tsCounts[i - 1] == 0)) {
-          tsCounts[i] = 1;
-        } else {
-          tsCounts[i] = (tsCounts[i - 1] >= 9) ? 1 : tsCounts[i - 1] + 1;
-        }
-        tdCounts[i] = 0;
-      }
-    }
-  }
-
-  // ---------------------------------------------------
-  // UI: Build
-  // ---------------------------------------------------
   @override
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        // 主內容
         IgnorePointer(
           ignoring: _isUpdating,
           child: Scaffold(
             appBar: AppBar(
-              title: Text('已保存的股票'),
+              title: Text('已保存的股票 (本地 DB)'),
               actions: [
-                // 更新按鈕
                 IconButton(
                   icon: Icon(Icons.update),
                   onPressed: _isUpdating ? null : _updateAllStocks,
                 ),
-                SizedBox(width: 8),
-                // 篩選週期 (Day, Week, All)
+                // freq下拉
                 DropdownButton<String>(
                   value: _filterFreq,
                   items: [
@@ -400,16 +191,17 @@ class _StockListPageState extends State<StockListPage> {
                     DropdownMenuItem(value: 'Day', child: Text('日線')),
                     DropdownMenuItem(value: 'Week', child: Text('週線')),
                   ],
-                  onChanged: (value) {
-                    setState(() {
-                      _filterFreq = value!;
-                      _applyFilter();
-                    });
+                  onChanged: (val) {
+                    if (val != null) {
+                      setState(() {
+                        _filterFreq = val;
+                        _applyFilter();
+                      });
+                    }
                   },
                   underline: SizedBox(),
                 ),
-                SizedBox(width: 8),
-                // 篩選信號 (All, TD, TS)
+                // signal下拉
                 DropdownButton<String>(
                   value: _filterSignal,
                   items: [
@@ -417,67 +209,78 @@ class _StockListPageState extends State<StockListPage> {
                     DropdownMenuItem(value: 'TD', child: Text('TD 信號')),
                     DropdownMenuItem(value: 'TS', child: Text('TS 信號')),
                   ],
-                  onChanged: (value) {
-                    setState(() {
-                      _filterSignal = value!;
-                      _applyFilter();
-                    });
+                  onChanged: (val) {
+                    if (val != null) {
+                      setState(() {
+                        _filterSignal = val;
+                        _applyFilter();
+                      });
+                    }
                   },
                   underline: SizedBox(),
                 ),
                 SizedBox(width: 8),
               ],
             ),
-            body: ListView.builder(
-              itemCount: _filteredStocks.length,
-              itemBuilder: (context, index) {
-                final stock = _filteredStocks[index];
-                return ListTile(
-                  leading: _buildSignalIcon(stock['signal']),
-                  title: Text('${stock['name']} (${stock['freq'] ?? 'Day'})'),
-                  subtitle: Text(
-                    '${stock['code']} - TD: ${stock['tdCount'] ?? 0}, '
-                    'TS: ${stock['tsCount'] ?? 0} - '
-                    '${_formatLastUpdate(stock['lastUpdate'])}',
-                  ),
-                  onTap: () {
-                    // 進入詳細頁
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (context) => StockDetail(
-                          stockCode: stock['code'],
-                          stockName: stock['name'],
-                          freq: stock['freq'] ?? 'Day', // <= 把freq也傳過去
+            body: _filteredStocks.isEmpty
+                ? Center(child: Text('目前沒有股票或篩選條件無資料'))
+                : ListView.builder(
+                    itemCount: _filteredStocks.length,
+                    itemBuilder: (context, idx) {
+                      final stock = _filteredStocks[idx];
+                      // stock = {id, code, name, freq, signal, tdCount, tsCount, lastUpdate}
+                      return ListTile(
+                        leading: _buildSignalIcon(stock['signal']),
+                        title: Text('${stock['name']} (${stock['freq']})'),
+                        subtitle: Text(
+                          '${stock['code']} - '
+                          'TD:${stock['tdCount'] ?? 0}, '
+                          'TS:${stock['tsCount'] ?? 0}\n'
+                          '${_formatLastUpdate(stock['lastUpdate'])}',
                         ),
-                      ),
-                    );
-                  },
-                  trailing: IconButton(
-                    icon: Icon(Icons.delete),
-                    onPressed: () => _removeStock(stock['id']),
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => StockDetail(
+                                stockCode: stock['code'],
+                                stockName: stock['name'],
+                                freq: stock['freq'],
+                              ),
+                            ),
+                          );
+                        },
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // 單支更新 => 直接呼叫API
+                            IconButton(
+                              icon: Icon(Icons.refresh),
+                              onPressed: () =>
+                                  api.updateSingleStock(stock['id']),
+                            ),
+                            // 刪除(本地)
+                            IconButton(
+                              icon: Icon(Icons.delete),
+                              onPressed: () => _removeStock(stock['id']),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
         ),
 
         // 遮罩 + 進度指示器
-        if (_isUpdating) ...[
-          ModalBarrier(
-            dismissible: false,
-            color: Colors.black45,
-          ),
-          Positioned.fill(
-            child: BackdropFilter(
-              filter: ui.ImageFilter.blur(sigmaX: 5.0, sigmaY: 5.0),
-              child: Container(color: Colors.black12),
-            ),
-          ),
+        if (_isUpdating)
+          ModalBarrier(dismissible: false, color: Colors.black45),
+        if (_isUpdating)
           Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // 假進度或不顯示實際進度也可
                 CircularProgressIndicator(
                   value:
                       _totalStocks > 0 ? _updateProgress / _totalStocks : null,
@@ -490,7 +293,6 @@ class _StockListPageState extends State<StockListPage> {
               ],
             ),
           ),
-        ],
       ],
     );
   }
