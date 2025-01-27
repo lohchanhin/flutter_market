@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
+
 import '../database/DatabaseHelper.dart';
 import '../components/SearchBar.dart';
 
@@ -11,158 +12,224 @@ class SearchPage extends StatefulWidget {
 
 class _SearchPageState extends State<SearchPage> {
   final TextEditingController _controller = TextEditingController();
+
+  // 從 assets/stocks_data.json 載入的股票清單 (只含 { "代號", "名稱" })
   List<dynamic> _stocks = [];
+
+  // 經過搜尋 / 篩選後顯示
   List<dynamic> _filteredStocks = [];
-  List<String> _addedStockCodes = []; // 已經加入 (只看 code)
+
+  // watchlist 表中已添加的 code 列表 (用於判斷「已添加 / 未添加」)
+  List<String> _addedStockCodes = [];
+
+  // 用於多選添加
   List<String> _selectedStocks = [];
+
+  // 篩選條件: 'All' / 'Added' / 'NotAdded'
   String _filter = 'All';
-  bool _isProcessing = false; // 用於控制是否顯示處理中提示框
+
+  bool _isProcessing = false; // 用於顯示「處理中」遮罩
 
   @override
   void initState() {
     super.initState();
-    _loadStockData();
-    _loadAddedStockCodes();
+    _loadStockData(); // 載入 JSON
+    _loadWatchlist(); // 載入 watchlist (code)
   }
 
-  // (1) 載入本地 JSON: stocks_data.json
+  // 1) 載入 JSON
   Future<void> _loadStockData() async {
     try {
-      final String response =
-          await rootBundle.loadString('assets/stocks_data.json');
-      // 假如 user 很快離開此頁，這時 widget 可能已 dispose
+      final response = await rootBundle.loadString('assets/stocks_data.json');
       if (!mounted) return;
       final data = json.decode(response);
+
       setState(() {
         _stocks = data;
+        _filteredStocks = _stocks;
       });
-      _applyFilter(); // 有需要也可直接 setState 內部呼叫
+      _applyFilter();
     } catch (e) {
-      // 可做錯誤處理
       print('Error in _loadStockData: $e');
     }
   }
 
-  // (2) 從資料庫抓已添加的股票代號
-  Future<void> _loadAddedStockCodes() async {
+  // 2) 載入 watchlist (使用者已添加的 code)
+  Future<void> _loadWatchlist() async {
     try {
-      final addedStocks = await DatabaseHelper.instance.getStocks();
+      final watchData = await DatabaseHelper.instance.getWatchlist();
       if (!mounted) return;
-      final codes = addedStocks.map<String>((s) => s['code'] as String).toSet();
+
+      // watchData => [ { id, code, name }, ... ]
+      final codes = watchData.map<String>((m) => m['code'] as String).toSet();
       setState(() {
         _addedStockCodes = codes.toList();
       });
+      _applyFilter();
     } catch (e) {
-      print('Error in _loadAddedStockCodes: $e');
+      print('Error in _loadWatchlist: $e');
     }
   }
 
-  // 搜尋處理
+  // 搜尋
   void _handleSearch(String query) {
     if (query.isEmpty) {
       setState(() => _filteredStocks = _stocks);
       _applyFilter();
       return;
     }
-    List<dynamic> results = _stocks.where((stock) {
-      final String name = stock['名稱'].toLowerCase();
-      final String code = stock['代號'].toLowerCase();
+    final results = _stocks.where((s) {
+      final name = (s['名稱'] ?? '').toLowerCase();
+      final code = (s['代號'] ?? '').toLowerCase();
       return name.contains(query.toLowerCase()) ||
           code.contains(query.toLowerCase());
     }).toList();
+
     setState(() {
       _filteredStocks = results;
       _applyFilter();
     });
   }
 
-  // 篩選處理
+  // 篩選: 'All' / 'Added' / 'NotAdded'
   void _applyFilter() {
     List<dynamic> results;
     if (_filter == 'All') {
-      results = _stocks;
+      results = _filteredStocks;
     } else if (_filter == 'Added') {
-      results =
-          _stocks.where((s) => _addedStockCodes.contains(s['代號'])).toList();
+      results = _filteredStocks
+          .where((s) => _addedStockCodes.contains(s['代號']))
+          .toList();
     } else {
-      // 'NotAdded'
-      results =
-          _stocks.where((s) => !_addedStockCodes.contains(s['代號'])).toList();
+      // NotAdded
+      results = _filteredStocks
+          .where((s) => !_addedStockCodes.contains(s['代號']))
+          .toList();
     }
     setState(() {
       _filteredStocks = results;
     });
   }
 
-  // 顯示 Snackbar
-  void _showSnackbar(String message) {
-    // 若要保險，也可先檢查 mounted
+  // 顯示訊息
+  void _showSnackbar(String msg) {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message), duration: Duration(seconds: 2)),
+        SnackBar(content: Text(msg), duration: Duration(seconds: 2)),
       );
     }
   }
 
-  // 切換選擇
-  void _toggleSelection(String stockCode) {
+  // 多選切換
+  void _toggleSelection(String code) {
     setState(() {
-      if (_selectedStocks.contains(stockCode)) {
-        _selectedStocks.remove(stockCode);
+      if (_selectedStocks.contains(code)) {
+        _selectedStocks.remove(code);
       } else {
-        _selectedStocks.add(stockCode);
+        _selectedStocks.add(code);
       }
     });
   }
 
-  // 一次建立「Day + Week」
-  Future<void> _addStockDayWeek(String code, String name) async {
+  // === 單支添加 => watchlist + stocks(Day/Week) ===
+  Future<void> _addSingle(String code, String name) async {
     try {
-      final dbStocks = await DatabaseHelper.instance.getStocks();
-      if (!mounted) return;
+      if (_addedStockCodes.contains(code)) return; // 已添加 => 不重複
 
-      final alreadyHasDay =
-          dbStocks.any((s) => s['code'] == code && s['freq'] == 'Day');
-      final alreadyHasWeek =
-          dbStocks.any((s) => s['code'] == code && s['freq'] == 'Week');
+      // 1) 加到 watchlist
+      await DatabaseHelper.instance.addToWatchlist(code, name);
 
-      if (!alreadyHasDay) {
+      // 2) 在 stocks 表中，檢查 (code, freq=Day/Week) 是否已存在，若無則新增
+      final localStocks = await DatabaseHelper.instance.getStocks();
+      final hasDay =
+          localStocks.any((row) => row['code'] == code && row['freq'] == 'Day');
+      final hasWeek = localStocks
+          .any((row) => row['code'] == code && row['freq'] == 'Week');
+
+      if (!hasDay) {
         await DatabaseHelper.instance.addStock({
           'code': code,
           'name': name,
           'freq': 'Day',
+          'signal': null,
+          'tdCount': 0,
+          'tsCount': 0,
+          'lastUpdate': null,
         });
       }
-      if (!alreadyHasWeek) {
+      if (!hasWeek) {
         await DatabaseHelper.instance.addStock({
           'code': code,
           'name': name,
           'freq': 'Week',
+          'signal': null,
+          'tdCount': 0,
+          'tsCount': 0,
+          'lastUpdate': null,
         });
       }
-      // 重新載入
-      await _loadAddedStockCodes();
+
+      // 3) 重新載入 watchlist => 更新UI
+      await _loadWatchlist();
+      _showSnackbar('已添加 $code (Day/Week)');
     } catch (e) {
-      print('Error in _addStockDayWeek: $e');
+      print('Error in _addSingle: $e');
     }
   }
 
-  // 全部添加
+  // === 全部添加 => 一次對 _filteredStocks 中未添加的做同樣流程 ===
   Future<void> _addAllStocks() async {
     setState(() => _isProcessing = true);
     try {
       int addedCount = 0;
-      for (var stock in _filteredStocks) {
-        final code = stock['代號'];
+      for (var s in _filteredStocks) {
+        final code = s['代號'];
+        final name = s['名稱'] ?? '';
+
         if (!_addedStockCodes.contains(code)) {
-          // 新增 (Day+Week)
-          await _addStockDayWeek(code, stock['名稱']);
+          // watchlist
+          await DatabaseHelper.instance.addToWatchlist(code, name);
+
+          // stocks => day/week
+          final localStocks = await DatabaseHelper.instance.getStocks();
+          final hasDay =
+              localStocks.any((r) => r['code'] == code && r['freq'] == 'Day');
+          final hasWeek =
+              localStocks.any((r) => r['code'] == code && r['freq'] == 'Week');
+
+          if (!hasDay) {
+            await DatabaseHelper.instance.addStock({
+              'code': code,
+              'name': name,
+              'freq': 'Day',
+              'signal': null,
+              'tdCount': 0,
+              'tsCount': 0,
+              'lastUpdate': null,
+            });
+          }
+          if (!hasWeek) {
+            await DatabaseHelper.instance.addStock({
+              'code': code,
+              'name': name,
+              'freq': 'Week',
+              'signal': null,
+              'tdCount': 0,
+              'tsCount': 0,
+              'lastUpdate': null,
+            });
+          }
+
           addedCount++;
         }
       }
+      // 重讀 watchlist => UI
+      await _loadWatchlist();
+
       if (!mounted) return;
       setState(() => _isProcessing = false);
-      _showSnackbar(addedCount > 0 ? '成功添加 $addedCount 個股票(含日/週)' : '沒有可添加的股票');
+      _showSnackbar(
+          addedCount > 0 ? '成功添加 $addedCount 個股票 (Day/Week)' : '沒有可添加的股票');
     } catch (e) {
       print('Error in _addAllStocks: $e');
       if (!mounted) return;
@@ -170,25 +237,107 @@ class _SearchPageState extends State<SearchPage> {
     }
   }
 
-  // 全部移除
+  // === 全部移除 (在 watchlist) => 不一定要刪 stocks => 看需求
   Future<void> _removeAllStocks() async {
     setState(() => _isProcessing = true);
     try {
       int removedCount = 0;
-      for (var stock in _filteredStocks) {
-        final code = stock['代號'];
+      for (var s in _filteredStocks) {
+        final code = s['代號'];
         if (_addedStockCodes.contains(code)) {
-          await DatabaseHelper.instance.deleteStockByCode(code);
+          // 移除 watchlist
+          await DatabaseHelper.instance.deleteWatchlistByCode(code);
           removedCount++;
+
+          // (可選) 若你也想刪 stocks, freq=Day/Week => un-comment:
+          // await DatabaseHelper.instance.deleteStockByCode(code);
         }
       }
-      // 刪完後重新載入
-      await _loadAddedStockCodes();
+      await _loadWatchlist();
+
       if (!mounted) return;
       setState(() => _isProcessing = false);
       _showSnackbar(removedCount > 0 ? '成功移除 $removedCount 個股票' : '沒有可移除的股票');
     } catch (e) {
       print('Error in _removeAllStocks: $e');
+      if (!mounted) return;
+      setState(() => _isProcessing = false);
+    }
+  }
+
+  // === 單支移除 (如果你需要)
+  Future<void> _removeSingle(String code) async {
+    setState(() => _isProcessing = true);
+    try {
+      // watchlist
+      await DatabaseHelper.instance.deleteWatchlistByCode(code);
+
+      // (可選) 若也想刪 stocks
+      // await DatabaseHelper.instance.deleteStockByCode(code);
+
+      await _loadWatchlist();
+      if (!mounted) return;
+      setState(() => _isProcessing = false);
+      _showSnackbar('已移除 $code');
+    } catch (e) {
+      print('Error in _removeSingle: $e');
+      if (!mounted) return;
+      setState(() => _isProcessing = false);
+    }
+  }
+
+  // === 批量添加「選定」 ===
+  Future<void> _addSelected() async {
+    setState(() => _isProcessing = true);
+    try {
+      int addedCount = 0;
+      for (var code in _selectedStocks) {
+        if (!_addedStockCodes.contains(code)) {
+          final item = _stocks.firstWhere((m) => m['代號'] == code);
+          final name = item['名稱'] ?? '';
+
+          // 加到 watchlist
+          await DatabaseHelper.instance.addToWatchlist(code, name);
+
+          // 加到 stocks => day/week
+          final localStocks = await DatabaseHelper.instance.getStocks();
+          final hasDay =
+              localStocks.any((r) => r['code'] == code && r['freq'] == 'Day');
+          final hasWeek =
+              localStocks.any((r) => r['code'] == code && r['freq'] == 'Week');
+          if (!hasDay) {
+            await DatabaseHelper.instance.addStock({
+              'code': code,
+              'name': name,
+              'freq': 'Day',
+              'signal': null,
+              'tdCount': 0,
+              'tsCount': 0,
+              'lastUpdate': null,
+            });
+          }
+          if (!hasWeek) {
+            await DatabaseHelper.instance.addStock({
+              'code': code,
+              'name': name,
+              'freq': 'Week',
+              'signal': null,
+              'tdCount': 0,
+              'tsCount': 0,
+              'lastUpdate': null,
+            });
+          }
+
+          addedCount++;
+        }
+      }
+      _selectedStocks.clear();
+      await _loadWatchlist();
+      if (!mounted) return;
+      setState(() => _isProcessing = false);
+      _showSnackbar('已批量添加選定的股票 ($addedCount)');
+    } catch (e) {
+      print('Error in _addSelected: $e');
       if (!mounted) return;
       setState(() => _isProcessing = false);
     }
@@ -206,17 +355,17 @@ class _SearchPageState extends State<SearchPage> {
       children: [
         Scaffold(
           appBar: AppBar(
-            title: Text('股票搜尋'),
+            title: Text('股票搜尋 (WatchList)'),
             actions: [
               IconButton(
                 icon: Icon(Icons.add),
                 onPressed: _addAllStocks,
-                tooltip: '全部添加(含日/週)',
+                tooltip: '全部添加',
               ),
               IconButton(
                 icon: Icon(Icons.delete),
                 onPressed: _removeAllStocks,
-                tooltip: '全部移除(含日/週)',
+                tooltip: '全部移除',
               ),
               DropdownButton<String>(
                 value: _filter,
@@ -225,10 +374,10 @@ class _SearchPageState extends State<SearchPage> {
                   DropdownMenuItem(value: 'Added', child: Text('已添加')),
                   DropdownMenuItem(value: 'NotAdded', child: Text('未添加')),
                 ],
-                onChanged: (value) {
-                  if (value != null) {
+                onChanged: (val) {
+                  if (val != null) {
                     setState(() {
-                      _filter = value;
+                      _filter = val;
                       _applyFilter();
                     });
                   }
@@ -241,7 +390,7 @@ class _SearchPageState extends State<SearchPage> {
             children: [
               // 搜尋框
               Padding(
-                padding: const EdgeInsets.all(8.0),
+                padding: EdgeInsets.all(8.0),
                 child: SearchBar2(
                   controller: _controller,
                   onSearch: _handleSearch,
@@ -253,10 +402,10 @@ class _SearchPageState extends State<SearchPage> {
                     ? Center(child: Text('沒有找到相關的股票'))
                     : ListView.builder(
                         itemCount: _filteredStocks.length,
-                        itemBuilder: (context, index) {
-                          final stock = _filteredStocks[index];
-                          final code = stock['代號'];
-                          final name = stock['名稱'];
+                        itemBuilder: (_, index) {
+                          final s = _filteredStocks[index];
+                          final code = s['代號'];
+                          final name = s['名稱'] ?? '';
                           final isSelected = _selectedStocks.contains(code);
                           final isAdded = _addedStockCodes.contains(code);
 
@@ -266,7 +415,7 @@ class _SearchPageState extends State<SearchPage> {
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                // 單支加入(含日/週)
+                                // 已添加 => check, 未添加 => add
                                 IconButton(
                                   icon: Icon(
                                     isAdded ? Icons.check : Icons.add,
@@ -274,10 +423,7 @@ class _SearchPageState extends State<SearchPage> {
                                   ),
                                   onPressed: isAdded
                                       ? null
-                                      : () async {
-                                          await _addStockDayWeek(code, name);
-                                          _showSnackbar('已添加 $code (日/週)');
-                                        },
+                                      : () => _addSingle(code, name),
                                 ),
                                 // 多選
                                 IconButton(
@@ -290,6 +436,21 @@ class _SearchPageState extends State<SearchPage> {
                                 ),
                               ],
                             ),
+                            onLongPress: () async {
+                              // 範例: 長按移除單個 => watchlist
+                              // (可自己改 UI)
+                              if (isAdded) {
+                                // 單個移除
+                                setState(() => _isProcessing = true);
+                                await DatabaseHelper.instance
+                                    .deleteWatchlistByCode(code);
+                                // (可選) 一併刪 stocks =>
+                                // await DatabaseHelper.instance.deleteStockByCode(code);
+                                await _loadWatchlist();
+                                setState(() => _isProcessing = false);
+                                _showSnackbar('已移除 $code');
+                              }
+                            },
                           );
                         },
                       ),
@@ -298,28 +459,15 @@ class _SearchPageState extends State<SearchPage> {
           ),
           floatingActionButton: _selectedStocks.isNotEmpty
               ? FloatingActionButton(
-                  onPressed: () async {
-                    // 批量添加選定
-                    for (var code in _selectedStocks) {
-                      final stock = _stocks.firstWhere((s) => s['代號'] == code);
-                      await _addStockDayWeek(stock['代號'], stock['名稱']);
-                    }
-                    if (!mounted) return;
-                    setState(() {
-                      _selectedStocks.clear();
-                    });
-                    _showSnackbar('已批量添加選定的股票(含日/週)');
-                  },
+                  onPressed: _addSelected,
                   child: Icon(Icons.done),
                 )
               : null,
         ),
-        // 遮罩與進度指示器
+
+        // 遮罩
         if (_isProcessing)
-          ModalBarrier(
-            dismissible: false,
-            color: Colors.black54,
-          ),
+          ModalBarrier(dismissible: false, color: Colors.black54),
         if (_isProcessing)
           Center(
             child: Column(
@@ -327,10 +475,7 @@ class _SearchPageState extends State<SearchPage> {
               children: [
                 CircularProgressIndicator(),
                 SizedBox(height: 16),
-                Text(
-                  '正在處理，請稍候...',
-                  style: TextStyle(color: Colors.white, fontSize: 16),
-                ),
+                Text('正在處理，請稍候...', style: TextStyle(color: Colors.white)),
               ],
             ),
           ),

@@ -89,6 +89,7 @@ class ApiService {
   // (可選) 如果後端支援「依股票代碼」查詢
   Future<Map<String, dynamic>> getStockDetailByCode(String code) async {
     final response = await http.get(Uri.parse('$baseUrl/stocks/code/$code'));
+    print('$baseUrl/stocks/code/$code');
     if (response.statusCode == 200) {
       return json.decode(response.body) as Map<String, dynamic>;
     } else {

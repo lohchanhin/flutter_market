@@ -1,14 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:intl/intl.dart';
-import '../services/api_service.dart';
-import '../components/Char.dart'; // 你的KLineChart
 import 'dart:developer';
+import 'package:intl/intl.dart';
+import '../models/stock_data.dart'; // <-- 同一個StockData
+import '../components/Char.dart'; // 你的KLineChart widget
+// 若 KLineChart 需要 "StockData" 類，就在這裡定義或 import
 
 class StockDetail extends StatefulWidget {
   final String stockCode; // e.g. "2330"
   final String stockName; // e.g. "台積電"
-  final String freq; // "Day" / "Week" (僅用來顯示，實際資料從後端拿)
+  final String freq; // "Day" or "Week"
 
   const StockDetail({
     Key? key,
@@ -21,42 +23,14 @@ class StockDetail extends StatefulWidget {
   _StockDetailState createState() => _StockDetailState();
 }
 
-// 方便前端 Chart 繪圖的資料結構
-class StockData {
-  final String date;
-  final double open, high, low, close, adjClose;
-  final int volume;
-
-  // 以下若 Chart 需要可加
-  int? tdCount;
-  bool? isBullishSignal;
-  bool? isBearishSignal;
-
-  StockData({
-    required this.date,
-    required this.open,
-    required this.high,
-    required this.low,
-    required this.close,
-    required this.adjClose,
-    required this.volume,
-    this.tdCount,
-    this.isBullishSignal,
-    this.isBearishSignal,
-  });
-}
-
 class _StockDetailState extends State<StockDetail> {
-  final ApiService api = ApiService();
+  bool _loading = true; // 是否正在加載
+  String? _errorMessage; // 若加載失敗，記錄錯誤
+  List<StockData> _historyList = []; // FinMind 回傳的K線資料
 
-  bool _loading = true;
-  String? _errorMessage;
-  List<StockData> _historyList = [];
-  Map<String, dynamic>? _stockInfo; // 後端回傳的基本資訊 (可能含 signal, tdCount, tsCount)
-
-  // Chart 回調：回傳計算到的訊號
+  // 若 KLineChart 有計算到某些 signalDays, 透過callback傳回
   List<StockData> signalDays = [];
-  void handleSignalData(List<StockData> signals) {
+  void _handleSignalData(List<StockData> signals) {
     setState(() {
       signalDays = signals;
     });
@@ -65,112 +39,167 @@ class _StockDetailState extends State<StockDetail> {
   @override
   void initState() {
     super.initState();
-    _fetchStockDetail();
+    _fetchHistoryFromFinMind();
   }
 
-  // -------------------------
-  // 1) 從後端 API 抓取資料
-  // -------------------------
-  Future<void> _fetchStockDetail() async {
+  // -----------------------------
+  // 1) 從 FinMind API 抓取日/週歷史K線
+  // -----------------------------
+  Future<void> _fetchHistoryFromFinMind() async {
     setState(() {
       _loading = true;
       _errorMessage = null;
       _historyList = [];
-      _stockInfo = null;
     });
+
     try {
-      // 呼叫後端 /api/stocks/:code
-      final detail = await api.getStockDetailByCode(widget.stockCode);
-      // detail 預期是 { "stockInfo": {...}, "history": [...] }
+      // 依 freq 選擇 dataset
+      // freq == 'Week' => TaiwanStockWeekPrice
+      // freq == 'Day'  => TaiwanStockPrice
+      final dataset =
+          (widget.freq == 'Week') ? 'TaiwanStockWeekPrice' : 'TaiwanStockPrice';
 
-      if (!detail.containsKey('history')) {
-        throw Exception('No "history" field from server');
+      // FinMind Token
+      const finmindToken =
+          'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNS0wMS0yNyAxNjozNTo0NiIsInVzZXJfaWQiOiJsb2hjaGFuaGluIiwiaXAiOiIxLjE2MC4xNDUuNDUifQ.JHGsTKrthx2CKUcxJj1r9Yclk6KCh4y6IFqzrev9t2I';
+
+      // 設定查詢區間: 例如抓最近 1 年
+      final now = DateTime.now();
+      final oneYearAgo = DateTime(now.year - 1, now.month, now.day);
+      final startDate = DateFormat('yyyy-MM-dd').format(oneYearAgo);
+
+      final url = Uri.parse(
+        'https://api.finmindtrade.com/api/v4/data?'
+        'dataset=$dataset&'
+        'data_id=${widget.stockCode}&'
+        'start_date=$startDate&'
+        'token=$finmindToken',
+      );
+
+      final resp = await http.get(url);
+      if (resp.statusCode == 200) {
+        final jsonBody = json.decode(resp.body);
+
+        if (jsonBody['status'] != 200) {
+          throw Exception(
+              'FinMind API Error: ${jsonBody["msg"] ?? jsonBody["info"]}');
+        }
+
+        final List<dynamic> dataList = jsonBody['data'];
+        if (dataList.isEmpty) {
+          throw Exception('FinMind回傳空資料');
+        }
+
+        // 依 dataset 不同, 週線 volume 欄位是 "trading_volume", 日線 volume 欄位是 "Trading_Volume"
+        final isWeek = (dataset == 'TaiwanStockWeekPrice');
+
+        // 解析
+        final List<StockData> parsed = [];
+        for (var item in dataList) {
+          final date = item['date'];
+          final open = item['open'];
+          final high = item['max'];
+          final low = item['min'];
+          final close = item['close'];
+          final volume =
+              isWeek ? item['trading_volume'] : item['Trading_Volume'];
+
+          // 若任何為 null => 跳過
+          if (date == null ||
+              open == null ||
+              high == null ||
+              low == null ||
+              close == null ||
+              volume == null) {
+            continue;
+          }
+
+          // FinMind 沒有 adjClose => 就直接用 close
+          parsed.add(
+            StockData(
+              date: date.toString(),
+              open: (open as num).toDouble(),
+              high: (high as num).toDouble(),
+              low: (low as num).toDouble(),
+              close: (close as num).toDouble(),
+              adjClose: (close as num).toDouble(),
+              volume: (volume as num).toInt(),
+            ),
+          );
+        }
+
+        if (parsed.isEmpty) {
+          throw Exception('解析後沒有有效的K線資料');
+        }
+
+        // FinMind 回傳順序大多是舊->新，也可能相反
+        // 你可依需求决定是否 reversed
+        // 這裡假設 KLineChart 需要「舊 => 新」的陣列
+        parsed.sort((a, b) => a.date.compareTo(b.date));
+
+        setState(() {
+          _historyList = parsed;
+          _loading = false;
+        });
+      } else {
+        throw Exception('HTTP ${resp.statusCode} error');
       }
-
-      // 把 stockInfo 取出
-      final info = detail['stockInfo'];
-      // 把 history 轉成 List<StockData>
-      final List historyJson = detail['history'];
-      final List<StockData> parsedHistory = historyJson.map((item) {
-        // 確保每個字段都能正確轉型 (double, int)
-        return StockData(
-          date: item['date'],
-          open: (item['open'] as num).toDouble(),
-          high: (item['high'] as num).toDouble(),
-          low: (item['low'] as num).toDouble(),
-          close: (item['close'] as num).toDouble(),
-          adjClose: (item['adjClose'] as num).toDouble(),
-          volume: (item['volume'] as num).toInt(),
-        );
-      }).toList();
-
+    } catch (e, st) {
+      log('Error fetching data from FinMind: $e', stackTrace: st);
       setState(() {
-        _stockInfo = info;
-        _historyList = parsedHistory;
-        _loading = false;
-      });
-    } catch (e) {
-      log('Error fetching stock detail: $e');
-      setState(() {
-        _errorMessage = '$e';
+        _errorMessage = e.toString();
         _loading = false;
       });
     }
   }
 
-  // -------------------------
-  // 2) 界面
-  // -------------------------
+  // -----------------------------
+  // 2) UI
+  // -----------------------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text('${widget.stockName} (${widget.freq})'),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.refresh),
+            onPressed: _loading ? null : _fetchHistoryFromFinMind,
+          ),
+        ],
       ),
       body: _loading
           ? Center(child: CircularProgressIndicator())
-          : _errorMessage != null
+          : (_errorMessage != null)
               ? Center(child: Text('Error: $_errorMessage'))
               : _historyList.isEmpty
-                  ? Center(child: Text('沒有取得任何K線資料'))
+                  ? Center(child: Text('無資料'))
                   : Column(
                       children: [
-                        // 1) 顯示上方基本資訊
-                        if (_stockInfo != null) ...[
-                          ListTile(
-                            title: Text(
-                                'Signal: ${_stockInfo!['signal'] ?? '無'}  TD:${_stockInfo!['tdCount']}  TS:${_stockInfo!['tsCount']}'),
-                            subtitle: Text(
-                                'LastUpdate: ${_stockInfo!['lastUpdate']}'),
-                          ),
-                          Divider(),
-                        ],
-
-                        // 2) 上半部：KLine圖
+                        // ★ 上半: Chart
                         Expanded(
                           flex: 1,
                           child: KLineChart(
                             stockData: _historyList,
-                            onSignalData: handleSignalData,
+                            onSignalData: _handleSignalData,
                           ),
                         ),
-
-                        // 3) 下半部：列出前端計算到的訊號 (若KLineChart有計算)
+                        // ★ 下半: 顯示計算到的訊號列表
                         Expanded(
                           flex: 1,
                           child: signalDays.isEmpty
-                              ? Center(child: Text('暫無任何TD/TS達9的訊號日'))
+                              ? Center(child: Text('無任何達成訊號日'))
                               : ListView.builder(
                                   itemCount: signalDays.length,
-                                  itemBuilder: (context, idx) {
+                                  itemBuilder: (_, idx) {
                                     final sd = signalDays[idx];
                                     final signalStr = sd.isBullishSignal == true
                                         ? '閃電'
                                         : '鑽石';
                                     return ListTile(
-                                      title: Text('${sd.date} - $signalStr'),
+                                      title: Text('${sd.date} => $signalStr'),
                                       subtitle: Text(
-                                          'Open: ${sd.open}, Close: ${sd.close}'),
+                                          'O=${sd.open}, C=${sd.close}, V=${sd.volume}'),
                                     );
                                   },
                                 ),
