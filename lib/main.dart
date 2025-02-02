@@ -1,15 +1,21 @@
 import 'package:flutter/material.dart';
-import './views/NotificationSettingsPage.dart';
-import './views/SearchPage.dart';
-import './views/StockListPage.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
+import 'views/login.dart'; // 登入介面
+import 'views/MainNavigationPage.dart'; // 主頁面
+import 'package:firebase_auth/firebase_auth.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // 初始化 Firebase，使用 CLI 產生的選項
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
   runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -18,60 +24,33 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: const MainNavigationPage(),
+      // 根據用戶登入狀態決定進入頁面
+      home: const AuthGate(),
     );
   }
 }
 
-class MainNavigationPage extends StatefulWidget {
-  const MainNavigationPage({super.key});
-
-  @override
-  State<MainNavigationPage> createState() => _MainNavigationPageState();
-}
-
-class _MainNavigationPageState extends State<MainNavigationPage> {
-  int _selectedIndex = 0;
-  static List<Widget> _widgetOptions = <Widget>[
-    SearchPage(),
-    StockListPage(),
-    NotificationSettingsPage(),
-  ];
-
-  void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
-  }
-
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('內測版本'),
-      ),
-      body: Center(
-        child: _widgetOptions.elementAt(_selectedIndex),
-      ),
-      bottomNavigationBar: BottomNavigationBar(
-        items: const <BottomNavigationBarItem>[
-          BottomNavigationBarItem(
-            icon: Icon(Icons.search),
-            label: 'Search',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.list),
-            label: 'Stock List',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.settings),
-            label: 'Settings',
-          ),
-        ],
-        currentIndex: _selectedIndex,
-        selectedItemColor: Colors.amber[800],
-        onTap: _onItemTapped,
-      ),
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        // 可根據需求加入載入指示器
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        if (snapshot.hasData && snapshot.data != null) {
+          // 若已登入，直接進入主頁面
+          return const MainNavigationPage();
+        } else {
+          // 否則呈現登入頁面
+          return const LoginPage();
+        }
+      },
     );
   }
 }
