@@ -3,14 +3,13 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:developer';
 import 'package:intl/intl.dart';
-import '../models/stock_data.dart'; // <-- 同一個StockData
-import '../components/Char.dart'; // 你的KLineChart widget
-// 若 KLineChart 需要 "StockData" 類，就在這裡定義或 import
+import '../models/stock_data.dart'; // StockData 包含 date, open, high, low, close, adjClose, volume 與 isBullishSignal 屬性
+import '../components/Char.dart'; // 你的 KLineChart widget
 
 class StockDetail extends StatefulWidget {
-  final String stockCode; // e.g. "2330"
-  final String stockName; // e.g. "台積電"
-  final String freq; // "Day" or "Week"
+  final String stockCode; // 例如 "2330"
+  final String stockName; // 例如 "台積電"
+  final String freq; // "Day" 或 "Week"
 
   const StockDetail({
     Key? key,
@@ -24,17 +23,14 @@ class StockDetail extends StatefulWidget {
 }
 
 class _StockDetailState extends State<StockDetail> {
-  bool _loading = true; // 是否正在加載
-  String? _errorMessage; // 若加載失敗，記錄錯誤
-  List<StockData> _historyList = []; // FinMind 回傳的K線資料
-
-  // 若 KLineChart 有計算到某些 signalDays, 透過callback傳回
+  bool _loading = true;
+  String? _errorMessage;
+  List<StockData> _historyList = [];
   List<StockData> signalDays = [];
-  void _handleSignalData(List<StockData> signals) {
-    setState(() {
-      signalDays = signals;
-    });
-  }
+
+  // 請將下列 token 改成正確的 FinMind API Token
+  final String finmindToken =
+      'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNS0wMi0xOCAwMToyOTo1NyIsInVzZXJfaWQiOiJsb2hjaGFuaGluIiwiaXAiOiIzNi4yMjUuMTU3LjEwIn0.u03i4v1534gBBKs_PoiocZ7_M-R6pepZ8GBGaEKgwyA';
 
   @override
   void initState() {
@@ -42,108 +38,164 @@ class _StockDetailState extends State<StockDetail> {
     _fetchHistoryFromFinMind();
   }
 
-  // -----------------------------
-  // 1) 從 FinMind API 抓取日/週歷史K線
-  // -----------------------------
+  /// 取得歷史資料 (TaiwanStockPrice)
+  Future<List<StockData>> _fetchHistoricalData() async {
+    const String histDataset = "TaiwanStockPrice";
+    final now = DateTime.now();
+    // 此處抓取過去 5 年的資料
+    final startDate = DateFormat('yyyy-MM-dd')
+        .format(DateTime(now.year - 5, now.month, now.day));
+    final url = Uri.parse(
+      'https://api.finmindtrade.com/api/v4/data?dataset=$histDataset&data_id=${widget.stockCode}&start_date=$startDate&token=$finmindToken',
+    );
+    final response = await http.get(url);
+    if (response.statusCode != 200) {
+      throw Exception('HTTP ${response.statusCode} error (歷史資料)');
+    }
+    final histJson = json.decode(response.body);
+    if (histJson['status'] != 200) {
+      throw Exception(
+          'FinMind API Error (TaiwanStockPrice): ${histJson["msg"] ?? histJson["info"]}');
+    }
+    final List<dynamic> dataList = histJson['data'];
+    if (dataList.isEmpty) {
+      throw Exception('FinMind 回傳空的歷史資料');
+    }
+    List<StockData> historical = [];
+    for (var item in dataList) {
+      if (item['date'] == null ||
+          item['open'] == null ||
+          item['max'] == null ||
+          item['min'] == null ||
+          item['close'] == null ||
+          item['Trading_Volume'] == null) {
+        continue;
+      }
+      historical.add(
+        StockData(
+          date: item['date'].toString(),
+          open: (item['open'] as num).toDouble(),
+          high: (item['max'] as num).toDouble(),
+          low: (item['min'] as num).toDouble(),
+          close: (item['close'] as num).toDouble(),
+          adjClose: (item['close'] as num).toDouble(),
+          volume: (item['Trading_Volume'] as num).toInt(),
+          isBullishSignal: null,
+        ),
+      );
+    }
+    return historical;
+  }
+
+  /// 取得即時資料，使用官方 endpoint "taiwan_stock_tick_snapshot"
+  /// 若非開盤時間或發生錯誤，則回傳空陣列
+  Future<List<StockData>> _fetchRealtimeData() async {
+    final url = Uri.parse(
+      'https://api.finmindtrade.com/api/v4/taiwan_stock_tick_snapshot?data_id=${widget.stockCode}&token=$finmindToken',
+    );
+    try {
+      final response = await http.get(url);
+      if (response.statusCode != 200) {
+        throw Exception('HTTP ${response.statusCode} error (即時資料)');
+      }
+      final realtimeJson = json.decode(response.body);
+      if (realtimeJson['status'] != 200) {
+        throw Exception(
+            'FinMind API Error (taiwan_stock_tick_snapshot): ${realtimeJson["msg"] ?? realtimeJson["info"]}');
+      }
+      final List<dynamic> dataList = realtimeJson['data'];
+      List<StockData> realtime = [];
+      for (var item in dataList) {
+        if (item['date'] == null ||
+            item['open'] == null ||
+            item['high'] == null ||
+            item['low'] == null ||
+            item['close'] == null ||
+            item['volume'] == null) {
+          continue;
+        }
+        realtime.add(
+          StockData(
+            date: item['date'].toString(),
+            open: (item['open'] as num).toDouble(),
+            high: (item['high'] as num).toDouble(),
+            low: (item['low'] as num).toDouble(),
+            close: (item['close'] as num).toDouble(),
+            adjClose: (item['close'] as num).toDouble(),
+            volume: (item['volume'] as num).toInt(),
+            isBullishSignal: null,
+          ),
+        );
+      }
+      return realtime;
+    } catch (e) {
+      log('Warning: 即時資料取得失敗，僅使用歷史資料。錯誤訊息: $e');
+      return [];
+    }
+  }
+
+  /// 取得歷史與即時資料後合併、排序並處理（依日或週模式）
   Future<void> _fetchHistoryFromFinMind() async {
     setState(() {
       _loading = true;
       _errorMessage = null;
       _historyList = [];
+      signalDays = [];
     });
-
     try {
-      // 依 freq 選擇 dataset
-      // freq == 'Week' => TaiwanStockWeekPrice
-      // freq == 'Day'  => TaiwanStockPrice
-      final dataset =
-          (widget.freq == 'Week') ? 'TaiwanStockWeekPrice' : 'TaiwanStockPrice';
+      final historical = await _fetchHistoricalData();
+      final realtime = await _fetchRealtimeData();
+      // 合併資料
+      List<StockData> combined = [...historical, ...realtime];
+      combined.sort((a, b) => a.date.compareTo(b.date));
 
-      // FinMind Token
-      const finmindToken =
-          'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNS0wMS0yNyAxNjozNTo0NiIsInVzZXJfaWQiOiJsb2hjaGFuaGluIiwiaXAiOiIxLjE2MC4xNDUuNDUifQ.JHGsTKrthx2CKUcxJj1r9Yclk6KCh4y6IFqzrev9t2I';
-
-      // 設定查詢區間: 例如抓最近 1 年
-      final now = DateTime.now();
-      final oneYearAgo = DateTime(now.year - 1, now.month, now.day);
-      final startDate = DateFormat('yyyy-MM-dd').format(oneYearAgo);
-
-      final url = Uri.parse(
-        'https://api.finmindtrade.com/api/v4/data?'
-        'dataset=$dataset&'
-        'data_id=${widget.stockCode}&'
-        'start_date=$startDate&'
-        'token=$finmindToken',
-      );
-
-      final resp = await http.get(url);
-      if (resp.statusCode == 200) {
-        final jsonBody = json.decode(resp.body);
-
-        if (jsonBody['status'] != 200) {
-          throw Exception(
-              'FinMind API Error: ${jsonBody["msg"] ?? jsonBody["info"]}');
+      // 若為週模式，根據 ISO 週進行分組並計算平均值
+      List<StockData> finalData;
+      if (widget.freq == 'Week') {
+        Map<String, List<StockData>> groups = {};
+        for (var data in combined) {
+          DateTime dt = DateTime.parse(data.date);
+          // 以該週的週一作為代表日期
+          DateTime monday = dt.subtract(Duration(days: dt.weekday - 1));
+          String mondayStr = DateFormat('yyyy-MM-dd').format(monday);
+          groups.putIfAbsent(mondayStr, () => []);
+          groups[mondayStr]!.add(data);
         }
-
-        final List<dynamic> dataList = jsonBody['data'];
-        if (dataList.isEmpty) {
-          throw Exception('FinMind回傳空資料');
-        }
-
-        // 依 dataset 不同, 週線 volume 欄位是 "trading_volume", 日線 volume 欄位是 "Trading_Volume"
-        final isWeek = (dataset == 'TaiwanStockWeekPrice');
-
-        // 解析
-        final List<StockData> parsed = [];
-        for (var item in dataList) {
-          final date = item['date'];
-          final open = item['open'];
-          final high = item['max'];
-          final low = item['min'];
-          final close = item['close'];
-          final volume =
-              isWeek ? item['trading_volume'] : item['Trading_Volume'];
-
-          // 若任何為 null => 跳過
-          if (date == null ||
-              open == null ||
-              high == null ||
-              low == null ||
-              close == null ||
-              volume == null) {
-            continue;
-          }
-
-          // FinMind 沒有 adjClose => 就直接用 close
-          parsed.add(
+        List<StockData> weeklyData = [];
+        groups.forEach((week, stocks) {
+          int count = stocks.length;
+          double sumOpen = stocks.fold(0.0, (sum, s) => sum + s.open);
+          double sumHigh = stocks.fold(0.0, (sum, s) => sum + s.high);
+          double sumLow = stocks.fold(0.0, (sum, s) => sum + s.low);
+          double sumClose = stocks.fold(0.0, (sum, s) => sum + s.close);
+          int sumVolume = stocks.fold(0, (sum, s) => sum + s.volume);
+          weeklyData.add(
             StockData(
-              date: date.toString(),
-              open: (open as num).toDouble(),
-              high: (high as num).toDouble(),
-              low: (low as num).toDouble(),
-              close: (close as num).toDouble(),
-              adjClose: (close as num).toDouble(),
-              volume: (volume as num).toInt(),
+              date: week,
+              open: sumOpen / count,
+              high: sumHigh / count,
+              low: sumLow / count,
+              close: sumClose / count,
+              adjClose: sumClose / count,
+              volume: (sumVolume / count).round(),
+              isBullishSignal: null,
             ),
           );
-        }
-
-        if (parsed.isEmpty) {
-          throw Exception('解析後沒有有效的K線資料');
-        }
-
-        // FinMind 回傳順序大多是舊->新，也可能相反
-        // 你可依需求决定是否 reversed
-        // 這裡假設 KLineChart 需要「舊 => 新」的陣列
-        parsed.sort((a, b) => a.date.compareTo(b.date));
-
-        setState(() {
-          _historyList = parsed;
-          _loading = false;
         });
+        weeklyData.sort((a, b) => a.date.compareTo(b.date));
+        finalData = weeklyData;
       } else {
-        throw Exception('HTTP ${resp.statusCode} error');
+        finalData = combined;
       }
+
+      // 計算 TD/TS 訊號 (以收盤價作為判斷標準)
+      List<StockData> computedSignals = _calculateSignals(finalData);
+
+      setState(() {
+        _historyList = finalData;
+        signalDays = computedSignals;
+        _loading = false;
+      });
     } catch (e, st) {
       log('Error fetching data from FinMind: $e', stackTrace: st);
       setState(() {
@@ -153,9 +205,42 @@ class _StockDetailState extends State<StockDetail> {
     }
   }
 
-  // -----------------------------
-  // 2) UI
-  // -----------------------------
+  /// 根據資料依 TD/TS 演算法計算訊號
+  /// 條件：以第 i 根資料的收盤價與第 i-4 根比較，
+  ///       若大於則累加 TD (若 TD[i-1] < 9，則 TD[i] = TD[i-1] + 1，否則重置為 1)；反之累加 TS
+  ///       當某序列累計達 9 時，分別觸發賣訊號 (TD==9，isBullishSignal = false) 或買訊號 (TS==9，isBullishSignal = true)
+  List<StockData> _calculateSignals(List<StockData> data) {
+    List<int> td = List.filled(data.length, 0);
+    List<int> ts = List.filled(data.length, 0);
+    List<StockData> signals = [];
+    for (int i = 0; i < data.length; i++) {
+      if (i < 4) {
+        td[i] = 0;
+        ts[i] = 0;
+        continue;
+      }
+      double currentClose = data[i].close;
+      double close4Ago = data[i - 4].close;
+      if (currentClose > close4Ago) {
+        td[i] = (td[i - 1] < 9) ? td[i - 1] + 1 : 1;
+      } else {
+        td[i] = 0;
+      }
+      if (currentClose < close4Ago) {
+        ts[i] = (ts[i - 1] < 9) ? ts[i - 1] + 1 : 1;
+      } else {
+        ts[i] = 0;
+      }
+      if (td[i] == 9) {
+        signals.add(data[i].copyWith(isBullishSignal: false));
+      }
+      if (ts[i] == 9) {
+        signals.add(data[i].copyWith(isBullishSignal: true));
+      }
+    }
+    return signals;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -176,15 +261,19 @@ class _StockDetailState extends State<StockDetail> {
                   ? Center(child: Text('無資料'))
                   : Column(
                       children: [
-                        // ★ 上半: Chart
+                        // 上半部：K 線圖
                         Expanded(
                           flex: 1,
                           child: KLineChart(
                             stockData: _historyList,
-                            onSignalData: _handleSignalData,
+                            onSignalData: (signals) {
+                              setState(() {
+                                signalDays = signals;
+                              });
+                            },
                           ),
                         ),
-                        // ★ 下半: 顯示計算到的訊號列表
+                        // 下半部：訊號列表
                         Expanded(
                           flex: 1,
                           child: signalDays.isEmpty

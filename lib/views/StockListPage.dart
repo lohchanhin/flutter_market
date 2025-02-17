@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'dart:ui' as ui;
 
 import '../database/DatabaseHelper.dart';
 import '../services/api_service.dart';
@@ -15,16 +14,18 @@ class _StockListPageState extends State<StockListPage> {
   final dbHelper = DatabaseHelper.instance;
   final api = ApiService();
 
-  List<Map<String, dynamic>> _stocks = []; // 來自本地 DB (僅顯示那些 watchlist 也有的)
-  List<Map<String, dynamic>> _filteredStocks = [];
+  List<Map<String, dynamic>> _stocks = []; // 本地 DB 所有股票資料
+  List<Map<String, dynamic>> _filteredStocks = []; // 篩選後的結果
 
-  Set<String> _watchlistCodes = {}; // 當前 watchlist 內的 code
+  Set<String> _watchlistCodes = {}; // watchlist 內的股票 code
   bool _isUpdating = false;
   int _updateProgress = 0;
   int _totalStocks = 0;
 
-  String _filterFreq = 'All'; // 篩 freq: All / Day / Week
-  String _filterSignal = 'All'; // 篩 signal: All / TD(=闪电) / TS(=钻石)
+  String _filterFreq = 'All'; // 篩選週期：All / Day / Week
+  String _filterSignal = 'All'; // 篩選訊號：All / TD(闪电) / TS(钻石)
+
+  DateTime? _selectedDate; // 若不為 null，依此日期進行篩選
 
   @override
   void initState() {
@@ -32,18 +33,20 @@ class _StockListPageState extends State<StockListPage> {
     _loadAllData();
   }
 
-  // 一次讀 watchlist + stocks
+  /// 比較兩個日期是否為同一天（忽略時間部分）
+  bool isSameDate(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
+
+  /// 從資料庫讀取 watchlist 與股票資料，並僅保留 watchlist 內的股票
   Future<void> _loadAllData() async {
     try {
-      // 1) 讀 watchlist => 拿 codes
+      // 取得 watchlist 中的股票 code
       final watchData = await dbHelper.getWatchlist();
       final codes = watchData.map<String>((m) => m['code'] as String).toSet();
 
-      // 2) 讀 stocks => 只留 code 在 watchlist 的
+      // 讀取所有股票資料，並僅保留 code 在 watchlist 內的記錄
       final allStocks = await dbHelper.getStocks();
-      // => [ {id, code, name, freq, signal, tdCount, tsCount, lastUpdate}, ...]
-
-      // 過濾: 只顯示 code 在 watchlist 內
       final filtered =
           allStocks.where((s) => codes.contains(s['code'])).toList();
 
@@ -62,20 +65,42 @@ class _StockListPageState extends State<StockListPage> {
     }
   }
 
-  // 篩選
+  /// 篩選邏輯：
+  /// 1. 依週期（_filterFreq）篩選
+  /// 2. 依訊號（_filterSignal）篩選
+  /// 3. 若有選擇日期，則：
+  ///    - signal 為「闪电」的股票必須其 lastUpdate 與選擇日期同一天
+  ///    - signal 為「钻石」或其他的則不受日期限制
   void _applyFilter() {
-    List<Map<String, dynamic>> temp = _stocks;
+    List<Map<String, dynamic>> temp = List.from(_stocks);
 
-    // freq
+    // 依週期篩選
     if (_filterFreq != 'All') {
       temp = temp.where((s) => s['freq'] == _filterFreq).toList();
     }
 
-    // signal
+    // 依訊號篩選：TD 表示闪电，TS 表示 钻石
     if (_filterSignal == 'TD') {
       temp = temp.where((s) => s['signal'] == '闪电').toList();
     } else if (_filterSignal == 'TS') {
       temp = temp.where((s) => s['signal'] == '钻石').toList();
+    }
+
+    // 日期篩選：僅對 signal 為闪电的股票進行日期比對
+    if (_selectedDate != null) {
+      temp = temp.where((s) {
+        if (s['lastUpdate'] == null) return false;
+        DateTime lastUpdate;
+        try {
+          lastUpdate = DateTime.parse(s['lastUpdate']);
+        } catch (e) {
+          return false;
+        }
+        if (s['signal'] == '闪电') {
+          return isSameDate(lastUpdate, _selectedDate!);
+        }
+        return true;
+      }).toList();
     }
 
     setState(() {
@@ -83,11 +108,40 @@ class _StockListPageState extends State<StockListPage> {
     });
   }
 
-  // 刪除(本地 stocks)
+  /// 根據頻率對最後更新時間進行格式化：
+  /// - 日線直接顯示原日期
+  /// - 週線則以該日期所屬週的「週一」作為代表日期
+  String _formatLastUpdate(String? lastUpdateStr, String freq) {
+    if (lastUpdateStr == null) return '未更新';
+    DateTime dt;
+    try {
+      dt = DateTime.parse(lastUpdateStr);
+    } catch (e) {
+      return '格式錯誤';
+    }
+    if (freq == 'Week') {
+      // 以該日期所屬週的週一為代表
+      DateTime monday = dt.subtract(Duration(days: dt.weekday - 1));
+      return '最後更新：${DateFormat('yyyy-MM-dd').format(monday)}';
+    } else {
+      return '最後更新：${DateFormat('yyyy-MM-dd HH:mm').format(dt)}';
+    }
+  }
+
+  /// 根據 signal 顯示對應圖示
+  Widget _buildSignalIcon(String? signal) {
+    if (signal == '闪电') {
+      return Icon(Icons.flash_on, color: Colors.green);
+    } else if (signal == '钻石') {
+      return Icon(Icons.diamond, color: Colors.red);
+    }
+    return Icon(Icons.do_not_disturb, color: Colors.grey);
+  }
+
+  /// 刪除本地 DB 中的股票記錄
   Future<void> _removeStock(int localId) async {
     try {
       await dbHelper.deleteStock(localId);
-      // 再次讀 watchlist & stocks => 只留 watchlist codes
       await _loadAllData();
     } catch (e) {
       print('Error removing stock: $e');
@@ -99,7 +153,7 @@ class _StockListPageState extends State<StockListPage> {
     }
   }
 
-  // 按「更新全部」 => 後端 => getAll => 同步 => 只顯示 watchlist
+  /// 模擬更新所有股票資料（例如呼叫後端 API、更新本地 DB）
   Future<void> _updateAllStocks() async {
     setState(() {
       _isUpdating = true;
@@ -108,14 +162,11 @@ class _StockListPageState extends State<StockListPage> {
     });
 
     try {
-      // A) 後端
-      // await api.updateAllStocks(); // FinMind抓 & 後端DB更新
-      // B) 拿最新
+      // 範例：先從後端取得最新資料
       final remoteList = await api.getAllStocks();
-      // => [ {id, code, freq, signal, tdCount, ...}, ...]
 
-      // C) 與本地 stocks => batchUpdate
-      final localAll = await dbHelper.getStocks(); // 先拿所有 stocks
+      // 取得本地所有股票，用以進行 batch 更新
+      final localAll = await dbHelper.getStocks();
       final Map<String, int> codeFreqToLocalId = {};
       for (var loc in localAll) {
         final key = '${loc['code']}|${loc['freq']}';
@@ -143,7 +194,6 @@ class _StockListPageState extends State<StockListPage> {
         await dbHelper.batchUpdateStocks(updates);
       }
 
-      // D) 重新讀 watchlist + stocks
       await _loadAllData();
 
       if (mounted) {
@@ -165,19 +215,30 @@ class _StockListPageState extends State<StockListPage> {
     });
   }
 
-  String _formatLastUpdate(String? lastUpdate) {
-    if (lastUpdate == null) return '未更新';
-    final dt = DateTime.parse(lastUpdate);
-    return '最後更新：${DateFormat('yyyy-MM-dd HH:mm').format(dt)}';
+  /// 日曆選擇器，讓使用者選取日期進行篩選
+  Future<void> _pickDate() async {
+    DateTime initialDate = _selectedDate ?? DateTime.now();
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: initialDate,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+      helpText: '選擇日期',
+    );
+    if (picked != null) {
+      setState(() {
+        _selectedDate = picked;
+      });
+      _applyFilter();
+    }
   }
 
-  Widget _buildSignalIcon(String? signal) {
-    if (signal == '闪电') {
-      return Icon(Icons.flash_on, color: Colors.green);
-    } else if (signal == '钻石') {
-      return Icon(Icons.diamond, color: Colors.red);
-    }
-    return Icon(Icons.do_not_disturb, color: Colors.grey);
+  /// 清除所選日期
+  void _clearDate() {
+    setState(() {
+      _selectedDate = null;
+    });
+    _applyFilter();
   }
 
   @override
@@ -188,7 +249,7 @@ class _StockListPageState extends State<StockListPage> {
           ignoring: _isUpdating,
           child: Scaffold(
             appBar: AppBar(
-              title: Text('Stocks (只顯示watchlist)'),
+              title: Text('Stocks (只顯示 watchlist)'),
               actions: [
                 IconButton(
                   icon: Icon(Icons.update),
@@ -205,8 +266,8 @@ class _StockListPageState extends State<StockListPage> {
                     if (val != null) {
                       setState(() {
                         _filterFreq = val;
-                        _applyFilter();
                       });
+                      _applyFilter();
                     }
                   },
                   underline: SizedBox(),
@@ -222,8 +283,8 @@ class _StockListPageState extends State<StockListPage> {
                     if (val != null) {
                       setState(() {
                         _filterSignal = val;
-                        _applyFilter();
                       });
+                      _applyFilter();
                     }
                   },
                   underline: SizedBox(),
@@ -231,40 +292,73 @@ class _StockListPageState extends State<StockListPage> {
                 SizedBox(width: 8),
               ],
             ),
-            body: _filteredStocks.isEmpty
-                ? Center(child: Text('沒有在 watchlist 中的股票，或篩選無資料'))
-                : ListView.builder(
-                    itemCount: _filteredStocks.length,
-                    itemBuilder: (ctx, i) {
-                      final s = _filteredStocks[i];
-                      return ListTile(
-                        leading: _buildSignalIcon(s['signal']),
-                        title: Text('${s['name']} (${s['freq']})'),
-                        subtitle: Text(
-                          '${s['code']} / '
-                          'TD:${s['tdCount'] ?? 0}, TS:${s['tsCount'] ?? 0}\n'
-                          '${_formatLastUpdate(s['lastUpdate'])}',
+            body: Column(
+              children: [
+                // 上方 Row：日曆選擇與符合條件的股票數量
+                Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Row(
+                    children: [
+                      TextButton.icon(
+                        icon: Icon(Icons.calendar_today),
+                        label: Text(_selectedDate == null
+                            ? '選擇日期'
+                            : DateFormat('yyyy-MM-dd').format(_selectedDate!)),
+                        onPressed: _pickDate,
+                      ),
+                      if (_selectedDate != null)
+                        IconButton(
+                          icon: Icon(Icons.clear),
+                          onPressed: _clearDate,
                         ),
-                        trailing: IconButton(
-                          icon: Icon(Icons.delete),
-                          onPressed: () => _removeStock(s['id']),
-                        ),
-                        onTap: () {
-                          // 若要看詳細
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => StockDetail(
-                                stockCode: s['code'],
-                                stockName: s['name'],
-                                freq: s['freq'],
-                              ),
-                            ),
-                          );
-                        },
-                      );
-                    },
+                      Spacer(),
+                      Text('符合條件: ${_filteredStocks.length}'),
+                    ],
                   ),
+                ),
+                Expanded(
+                  child: _filteredStocks.isEmpty
+                      ? Center(child: Text('沒有在 watchlist 中的股票，或篩選無資料'))
+                      : ListView.builder(
+                          itemCount: _filteredStocks.length,
+                          itemBuilder: (ctx, i) {
+                            final s = _filteredStocks[i];
+                            // 依據股票週期，格式化 lastUpdate 日期
+                            final formattedLastUpdate = _formatLastUpdate(
+                              s['lastUpdate'],
+                              s['freq'] ?? 'Day',
+                            );
+                            return ListTile(
+                              leading: _buildSignalIcon(s['signal']),
+                              title: Text('${s['name']} (${s['freq']})'),
+                              subtitle: Text(
+                                '${s['code']} / '
+                                'TD:${s['tdCount'] ?? 0}, TS:${s['tsCount'] ?? 0}\n'
+                                '$formattedLastUpdate',
+                              ),
+                              trailing: IconButton(
+                                icon: Icon(Icons.delete),
+                                onPressed: () => _removeStock(s['id']),
+                              ),
+                              onTap: () {
+                                // 點擊進入詳細頁面，傳入正確的股票代號、名稱與週期
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => StockDetail(
+                                      stockCode: s['code'],
+                                      stockName: s['name'],
+                                      freq: s['freq'],
+                                    ),
+                                  ),
+                                );
+                              },
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
           ),
         ),
         if (_isUpdating)

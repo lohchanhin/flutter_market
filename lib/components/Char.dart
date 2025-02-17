@@ -4,13 +4,13 @@ import 'package:fl_chart/fl_chart.dart';
 import '../models/stock_data.dart';
 
 ////////////////////////////////////////////////////////
-// 2) KLineChart 小部件
+// KLineChart 小部件（升級版）
 ////////////////////////////////////////////////////////
 class KLineChart extends StatefulWidget {
-  /// 由外部傳入的一組 K 線資料
+  /// 外部傳入的一組 K 線資料
   final List<StockData> stockData;
 
-  /// 計算到「TD=9或TS=9」的日期，可藉由 onSignalData 傳出去
+  /// 計算到「TD=9 或 TS=9」的訊號日，回傳給外部
   final Function(List<StockData>) onSignalData;
 
   const KLineChart({
@@ -34,23 +34,32 @@ class _KLineChartState extends State<KLineChart> {
   @override
   void initState() {
     super.initState();
-
-    // 準備 TD/TS counts 的陣列
     final length = widget.stockData.length;
     tdCounts = List.filled(length, 0);
     tsCounts = List.filled(length, 0);
 
-    // 計算 TD/TS
+    // 計算 TD/TS 次數（從第 4 筆開始）
     _calculateTDTSCounts(widget.stockData, tdCounts, tsCounts);
 
-    // 收集「TD=9 / TS=9」的日子，傳給外部
+    // 根據 TD/TS 次數計算訊號，從第 4 筆開始
+    for (int i = 4; i < widget.stockData.length; i++) {
+      if (tdCounts[i] == 9) {
+        // TD==9 代表賣訊號，設定 isBullishSignal 為 false
+        signalDays.add(widget.stockData[i].copyWith(isBullishSignal: false));
+      } else if (tsCounts[i] == 9) {
+        // TS==9 代表買訊號，設定 isBullishSignal 為 true
+        signalDays.add(widget.stockData[i].copyWith(isBullishSignal: true));
+      }
+    }
+
+    // 畫面繪製後回傳訊號資料並滾動到最新K棒
     WidgetsBinding.instance.addPostFrameCallback((_) {
       widget.onSignalData(signalDays);
       _scrollToEnd();
     });
   }
 
-  // 滾到右邊，顯示最新K
+  // 滾動到圖表右邊，顯示最新 K 棒
   void _scrollToEnd() {
     double chartWidth =
         MediaQuery.of(context).size.width * (widget.stockData.length / 10);
@@ -60,17 +69,13 @@ class _KLineChartState extends State<KLineChart> {
 
   @override
   Widget build(BuildContext context) {
-    // 計算圖表寬度
     double chartWidth =
         MediaQuery.of(context).size.width * (widget.stockData.length / 10);
-
-    // 給 K 線一點上下 padding
     double minY = widget.stockData.map((e) => e.low).reduce(min) * 0.95;
     double maxY = widget.stockData.map((e) => e.high).reduce(max) * 1.05;
 
     return Container(
       height: 400,
-      // 頂部空間 40，讓圖在視覺上更居中
       margin: const EdgeInsets.only(top: 40),
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: InteractiveViewer(
@@ -86,19 +91,18 @@ class _KLineChartState extends State<KLineChart> {
               minY: minY,
               maxY: maxY,
               barGroups: _buildBarGroups(),
-              // 座標軸標籤
               titlesData: FlTitlesData(
                 show: true,
                 bottomTitles: AxisTitles(
                   sideTitles: SideTitles(
                     showTitles: true,
-                    interval: 5, // 每5根顯示一次日期
+                    interval: 5, // 每 5 根顯示一次日期
                     getTitlesWidget: (value, meta) {
                       final idx = value.toInt();
                       if (idx < 0 || idx >= widget.stockData.length) {
                         return const SizedBox.shrink();
                       }
-                      // e.g. '2023-05-10' => '05-10'
+                      // 格式化日期：例如 '2023-05-10' 只顯示 '05-10'
                       final rawDate = widget.stockData[idx].date;
                       final label = (rawDate.length >= 10)
                           ? rawDate.substring(5, 10)
@@ -137,40 +141,20 @@ class _KLineChartState extends State<KLineChart> {
     );
   }
 
-  /// 建立蠟燭線: rod1=影線, rod2=主體
+  /// 建立每根 K 線的 BarChartGroupData（僅用於繪製圖表）
   List<BarChartGroupData> _buildBarGroups() {
     final groups = <BarChartGroupData>[];
     for (int i = 0; i < widget.stockData.length; i++) {
       final data = widget.stockData[i];
-
       final open = data.open;
       final close = data.close;
       final high = data.high;
       final low = data.low;
 
-      final tdVal = tdCounts[i];
-      final tsVal = tsCounts[i];
-
-      // 若TD=9/TS=9 => 收集, 可能外部要用
-      if (tdVal == 9 || tsVal == 9) {
-        data.isBullishSignal = (tdVal == 9);
-        data.isBearishSignal = (tsVal == 9);
-        signalDays.add(data);
-      }
-
-      // 判斷漲跌 => 決定K棒顏色
+      // 判斷漲跌 => 決定 K 棒顏色
       final isBull = (close >= open);
       final candleColor = isBull ? Colors.green : Colors.red;
 
-      // // rod1: 影線 (low->high)
-      // final shadowRod = BarChartRodData(
-      //   fromY: low,
-      //   toY: high,
-      //   width: 2,
-      //   color: candleColor,
-      // );
-
-      // rod2: 主體 (open->close)
       final bodyRod = BarChartRodData(
         fromY: open,
         toY: close,
@@ -181,20 +165,16 @@ class _KLineChartState extends State<KLineChart> {
       final group = BarChartGroupData(
         x: i,
         barRods: [bodyRod],
-        showingTooltipIndicators: [0, 1],
+        showingTooltipIndicators: [0],
       );
       groups.add(group);
     }
     return groups;
   }
 
-  /// Tooltip 僅顯示 "閃電⚡" (TD=9) / "鑽石💎" (TS=9)
-  BarTooltipItem _getTooltipItem(
-    BarChartGroupData group,
-    int groupIndex,
-    BarChartRodData rod,
-    int rodIndex,
-  ) {
+  /// Tooltip 僅顯示 "⚡" (TD==9) 或 "💎" (TS==9)，若尚未達 9 則顯示累計數字
+  BarTooltipItem _getTooltipItem(BarChartGroupData group, int groupIndex,
+      BarChartRodData rod, int rodIndex) {
     final idx = group.x.toInt();
     final tdVal = tdCounts[idx];
     final tsVal = tsCounts[idx];
@@ -203,54 +183,42 @@ class _KLineChartState extends State<KLineChart> {
     Color textColor = Colors.white;
 
     if (tdVal > 0) {
-      // TD 狀況 => 紅色
       textColor = Colors.red;
       if (tdVal == 9) {
-        text = '⚡'; // 閃電
+        text = '⚡'; // 賣訊號標記
       } else {
-        text = '$tdVal'; // 顯示數字
+        text = '$tdVal';
       }
     } else if (tsVal > 0) {
-      // TS 狀況 => 綠色
       textColor = Colors.green;
       if (tsVal == 9) {
-        text = '💎'; // 鑽石
+        text = '💎'; // 買訊號標記
       } else {
-        text = '$tsVal'; // 顯示數字
+        text = '$tsVal';
       }
-    } else {
-      // tdVal=0 && tsVal=0 => 不顯示
-      text = '';
     }
-
     return BarTooltipItem(
       text,
       TextStyle(color: textColor, fontSize: 16),
     );
   }
 
-  /// 計算 TD/TS
+  /// 計算 TD/TS 次數
+  /// 從第 4 筆資料開始，若當前收盤大於第 i-4 筆則累加 TD（否則歸 0），反之則累加 TS
   void _calculateTDTSCounts(
       List<StockData> data, List<int> tdCounts, List<int> tsCounts) {
     for (int i = 4; i < data.length; i++) {
-      // TD (連續漲)
-      if (data[i].close > data[i - 4].close) {
-        if (tsCounts[i - 1] > 0 ||
-            (tdCounts[i - 1] == 0 && tsCounts[i - 1] == 0)) {
-          tdCounts[i] = 1;
-        } else {
-          tdCounts[i] = (tdCounts[i - 1] >= 9) ? 1 : tdCounts[i - 1] + 1;
-        }
+      double currentClose = data[i].close;
+      double previousClose = data[i - 4].close;
+      if (currentClose > previousClose) {
+        tdCounts[i] = (tdCounts[i - 1] < 9) ? tdCounts[i - 1] + 1 : 1;
         tsCounts[i] = 0;
-      } else {
-        // TS (連續跌)
-        if (tdCounts[i - 1] > 0 ||
-            (tdCounts[i - 1] == 0 && tsCounts[i - 1] == 0)) {
-          tsCounts[i] = 1;
-        } else {
-          tsCounts[i] = (tsCounts[i - 1] >= 9) ? 1 : tsCounts[i - 1] + 1;
-        }
+      } else if (currentClose < previousClose) {
+        tsCounts[i] = (tsCounts[i - 1] < 9) ? tsCounts[i - 1] + 1 : 1;
         tdCounts[i] = 0;
+      } else {
+        tdCounts[i] = 0;
+        tsCounts[i] = 0;
       }
     }
   }
