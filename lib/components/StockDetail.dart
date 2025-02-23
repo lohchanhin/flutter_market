@@ -44,7 +44,7 @@ class _StockDetailState extends State<StockDetail> {
     final now = DateTime.now();
     // 此處抓取過去 5 年的資料
     final startDate = DateFormat('yyyy-MM-dd')
-        .format(DateTime(now.year - 5, now.month, now.day));
+        .format(DateTime(now.year - 20, now.month, now.day));
     final url = Uri.parse(
       'https://api.finmindtrade.com/api/v4/data?dataset=$histDataset&data_id=${widget.stockCode}&start_date=$startDate&token=$finmindToken',
     );
