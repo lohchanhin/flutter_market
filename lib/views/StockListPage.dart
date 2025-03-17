@@ -14,97 +14,53 @@ class _StockListPageState extends State<StockListPage> {
   final dbHelper = DatabaseHelper.instance;
   final api = ApiService();
 
-  /// 從本地 stocks 撈到的「已在 watchlist」的資料
+  /// 從本地 stocks 撈到的(且在 watchlist 裏)資料
   List<Map<String, dynamic>> _stocks = [];
 
-  /// 篩選後要顯示在 ListView 的結果
+  /// 要顯示在 ListView 的最終結果
   List<Map<String, dynamic>> _filteredStocks = [];
 
-  /// 保存「serverId -> 該股票所有 signals」的對應
-  Map<int, List<Map<String, dynamic>>> _allSignals = {};
-
-  /// 若已選日期，記錄「本地 stocks.id -> 該日 matched signals」，
-  /// 方便在 UI 中顯示多個圖示
-  Map<int, List<Map<String, dynamic>>> _signalsForDate = {};
-
+  /// 是否正在「更新 / 抓資料」
   bool _isUpdating = false;
   int _updateProgress = 0;
   int _totalStocks = 0;
 
-  String _filterFreq = 'All'; // 篩選週期：All / Day / Week
-  String _filterSignal = 'All'; // 篩選訊號：All / TD(闪电) / TS(钻石)
-  DateTime? _selectedDate; // 若不為 null，則只顯示該日期有信號的股票
+  /// 篩選週期
+  String _filterFreq = 'All'; // All / Day / Week
+
+  /// 篩選訊號
+  String _filterSignal = 'All'; // All / TD / TS
+
+  /// 若不為 null => 從後端查當天訊號
+  DateTime? _selectedDate;
 
   @override
   void initState() {
     super.initState();
-    _loadAllData();
+    _loadAllData(); // 初始先載入本地 watchlist 資料
   }
 
-  /// 一次把:
-  ///   1) watchlist (取得 codes)
-  ///   2) stocks (篩出 watchlist 中的股票)
-  ///   3) signals (撈出這些股票對應的所有訊號)
-  /// 都載入後，最後呼叫 _applyFilter()
+  /// [A] 載入本地 watchlist 資料 (不含 signals)
+  ///    然後套用週期 / 信號篩選
   Future<void> _loadAllData() async {
     try {
-      // 1) 取得 watchlist 中的股票 code
+      // 1) 拿到 watchlist 中的股票 code
       final watchData = await dbHelper.getWatchlist();
       final watchCodes =
           watchData.map<String>((m) => m['code'] as String).toSet();
 
-      // 2) 讀取所有 stocks，僅保留 code 在 watchlist 裏的
+      // 2) 撈出本地 stocks，僅保留屬於 watchlist 的
       final allStocks = await dbHelper.getStocks();
       final filtered = allStocks.where((s) => watchCodes.contains(s['code']));
 
-      // 3) 建立一個 {serverId: [signal, ...]} 的 map
-      final Map<int, List<Map<String, dynamic>>> signalsMap = {};
-      for (var stock in filtered) {
-        final sid = stock['serverId'] as int? ?? 0; // 後端 ID
-        if (sid > 0) {
-          // 撈取該 serverId 的所有 signals
-          final sigList = await dbHelper.getSignalsByStockId(sid);
-          signalsMap[sid] = sigList;
-        } else {
-          // 若沒設定 serverId，就給空陣列
-          signalsMap[0] = [];
-        }
-      }
+      // [篩選] freq / signal
+      List<Map<String, dynamic>> temp = filtered.toList();
 
-      setState(() {
-        _stocks = filtered.toList();
-        _allSignals = signalsMap;
-      });
-      _applyFilter();
-    } catch (e) {
-      print('Error in _loadAllData: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('載入資料失敗: $e')),
-        );
-      }
-    }
-  }
-
-  /// 核心邏輯：
-  /// - 若 _selectedDate == null => 僅依 stocks.freq + stocks.signal 做篩選 (顯示所有在 watchlist 的股票)
-  /// - 若 _selectedDate != null => 從 signals 裏面找「符合該日期」的紀錄，
-  ///   並且 (若 user 選 TD/TS) 要符合同樣訊號；最後再過濾 freq。
-  /// - 若同一檔股票當日有多筆不同的 signal，都一併記錄，UI 顯示多個 icon
-  void _applyFilter() {
-    // 複製一份 stocks
-    List<Map<String, dynamic>> temp = List.from(_stocks);
-
-    // 清空當日 matched signals
-    _signalsForDate.clear();
-
-    // 未選日期 => 依 stocks 表中 freq, signal 篩選
-    if (_selectedDate == null) {
-      // 篩週期
+      // 週期篩選
       if (_filterFreq != 'All') {
         temp = temp.where((s) => s['freq'] == _filterFreq).toList();
       }
-      // 篩訊號: TD=閃電, TS=鑽石
+      // 信號篩選
       if (_filterSignal == 'TD') {
         temp = temp.where((s) => s['signal'] == '闪电').toList();
       } else if (_filterSignal == 'TS') {
@@ -112,70 +68,120 @@ class _StockListPageState extends State<StockListPage> {
       }
 
       setState(() {
-        _filteredStocks = temp;
+        _stocks = filtered.toList(); // watchlist 全部
+        _filteredStocks = temp; // 篩選後結果
       });
-      return;
-    }
-
-    // 若已選日期 => 從 signals 查當天所有紀錄
-    final dateStr = DateFormat('yyyy-MM-dd').format(_selectedDate!);
-    final result = <Map<String, dynamic>>[];
-
-    for (var stock in temp) {
-      final freq = stock['freq'] as String?;
-      // 先檢查週期
-      if (_filterFreq != 'All' && freq != _filterFreq) {
-        continue;
-      }
-
-      final sid = stock['serverId'] as int? ?? 0;
-      final signalList = _allSignals[sid] ?? [];
-
-      // 依使用者選擇的訊號類型，過濾 signals
-      List<Map<String, dynamic>> matched = signalList;
-      if (_filterSignal == 'TD') {
-        matched = matched.where((m) => m['signal'] == '闪电').toList();
-      } else if (_filterSignal == 'TS') {
-        matched = matched.where((m) => m['signal'] == '钻石').toList();
-      }
-
-      // 再依日期
-      matched = matched.where((m) {
-        if (m['date'] == null) return false;
-        final signalDateStr = (m['date'] as String).split('T').first;
-        return signalDateStr == dateStr;
-      }).toList();
-
-      if (matched.isNotEmpty) {
-        result.add(stock);
-        final localId = stock['id'] as int;
-        _signalsForDate[localId] = matched; // 記錄當日的多筆 matched signals
-      }
-    }
-
-    setState(() {
-      _filteredStocks = result;
-    });
-  }
-
-  /// 刪除本地 DB 中的股票記錄
-  Future<void> _removeStock(int localId) async {
-    try {
-      await dbHelper.deleteStock(localId);
-      await _loadAllData();
     } catch (e) {
-      print('Error removing stock: $e');
+      print('Error loadAllData: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('刪除失敗: $e')),
+          SnackBar(content: Text('載入本地資料失敗: $e')),
         );
       }
     }
   }
 
-  /// 模擬更新所有股票資料（例如呼叫後端 API、更新本地 DB）
-  /// 此示範包含將後端返回的 signals 一併寫入本地
+  /// [B] 從伺服器抓「指定日期」有訊號的股票
+  ///    注意：後端可能一次回傳多筆(同股票不同signal)，這裡合併成單一筆
+  Future<void> _fetchStocksBySelectedDate() async {
+    if (_selectedDate == null) return; // 若尚未選日期，直接略過
+
+    setState(() {
+      _isUpdating = true;
+      _updateProgress = 0;
+      _totalStocks = 0;
+    });
+
+    try {
+      final dateStr = DateFormat('yyyy-MM-dd').format(_selectedDate!);
+
+      // freq=All 就不傳; signal=All 就不傳
+      String? freqParam = (_filterFreq != 'All') ? _filterFreq : null;
+      String? signalParam;
+      if (_filterSignal == 'TD') {
+        signalParam = 'TD';
+      } else if (_filterSignal == 'TS') {
+        signalParam = 'TS';
+      }
+
+      // 呼叫後端 API
+      final rawList = await api.getStocksByDate(
+        date: dateStr,
+        freq: freqParam,
+        signalType: signalParam,
+      ); // 可能結構: [{stockId, code, name, freq, date, signal, tdCount, tsCount}, ...]
+
+      // 同一股票若有多筆(多個訊號)，合併只顯示一個圖示
+      // 先用 stockId 當 key，彙整
+      final Map<int, Map<String, dynamic>> merged = {};
+
+      for (var r in rawList) {
+        final stockId = r['stockId'] as int;
+        if (!merged.containsKey(stockId)) {
+          // 第一筆
+          merged[stockId] = {
+            ...r,
+            // 用 Set 來裝可能的 signals
+            'signalSet': <String>{if (r['signal'] != null) r['signal']},
+          };
+        } else {
+          // 已存在 => 加入新的 signal
+          final exist = merged[stockId]!;
+          final sigSet = exist['signalSet'] as Set<String>;
+          if (r['signal'] != null) {
+            sigSet.add(r['signal']);
+          }
+        }
+      }
+
+      // 整理 => 若同時有 "闪电" "钻石" 就給某個特殊圖示 or 二擇一
+      final List<Map<String, dynamic>> finalList = [];
+      merged.forEach((stockId, item) {
+        final sigSet = item['signalSet'] as Set<String>;
+        String finalSignal;
+        if (sigSet.contains('闪电') && sigSet.contains('钻石')) {
+          // 例如統一用 'both' 或自己決定
+          finalSignal = 'both';
+        } else if (sigSet.contains('闪电')) {
+          finalSignal = '闪电';
+        } else if (sigSet.contains('钻石')) {
+          finalSignal = '钻石';
+        } else {
+          finalSignal = ''; // 沒有特殊訊號
+        }
+        item['signal'] = finalSignal;
+        item.remove('signalSet'); // 移除臨時欄位
+        finalList.add(item);
+      });
+
+      setState(() {
+        _filteredStocks = finalList;
+      });
+    } catch (e) {
+      print('Error fetchStocksBySelectedDate: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('查詢伺服器失敗: $e')),
+        );
+      }
+    }
+
+    setState(() {
+      _isUpdating = false;
+    });
+  }
+
+  /// [C] 更新(一鍵更新)
+  /// - 若未選日期 => 還是舊有 "getAllStocks" -> 同步本地
+  /// - 若已選日期 => 直接重新抓當日訊號
   Future<void> _updateAllStocks() async {
+    if (_selectedDate != null) {
+      // 已選日期 => 直接抓當日訊號
+      await _fetchStocksBySelectedDate();
+      return;
+    }
+
+    // 未選日期 => 舊有流程
     setState(() {
       _isUpdating = true;
       _updateProgress = 0;
@@ -183,10 +189,8 @@ class _StockListPageState extends State<StockListPage> {
     });
 
     try {
-      // 1) 從後端取得最新資料 (確保這支 API 有帶入 signals 陣列)
-      final remoteList = await api.getAllStocks();
-
-      // 2) 取得本地 stocks，建立 { code|freq -> localStock } map
+      final remoteList = await api.getAllStocks(); // 舊有(全部)
+      // 同步到本地 ...
       final localAll = await dbHelper.getStocks();
       final Map<String, Map<String, dynamic>> codeFreqToLocal = {};
       for (var loc in localAll) {
@@ -194,18 +198,16 @@ class _StockListPageState extends State<StockListPage> {
         codeFreqToLocal[key] = loc;
       }
 
-      // 3) 同步後端資料 -> stocks & signals
       for (var remote in remoteList) {
-        final serverId = remote['id'] as int; // 後端的 stockId
+        final serverId = remote['id'] as int;
         final code = remote['code'] as String;
-        final freq = remote['freq'] as String?;
+        final freq = remote['freq'] as String? ?? 'Day';
         final key = '$code|$freq';
 
-        // === 3-1. 若本地有該股票, 可更新 stocks (若需要) ===
         if (codeFreqToLocal.containsKey(key)) {
-          // 例如更新 stocks.serverId, signal, lastUpdate, tdCount, tsCount 等
           final localStock = codeFreqToLocal[key]!;
           final localId = localStock['id'] as int;
+          // 更新 stocks
           await dbHelper.updateStockServerId(localId, serverId);
           await dbHelper.updateStockSignal(
             localId,
@@ -216,16 +218,14 @@ class _StockListPageState extends State<StockListPage> {
           );
         }
 
-        // === 3-2. 同步 signals ===
+        // 同步 signals (先刪再插)
         final signals = remote['signals'] as List<dynamic>? ?? [];
-        // 先刪除
         await dbHelper.deleteSignalsByStockId(serverId);
-        // 再批次插入
         if (signals.isNotEmpty) {
           final toInsert = signals
               .map((sig) => {
                     'id': sig['id'],
-                    'stockId': sig['stockId'], // 後端 stockId
+                    'stockId': sig['stockId'],
                     'date': sig['date'],
                     'signal': sig['signal'],
                     'tdCount': sig['tdCount'] ?? 0,
@@ -237,12 +237,12 @@ class _StockListPageState extends State<StockListPage> {
         }
       }
 
-      // 4) 同步完成，重新載入
+      // 重新載入本地 watchlist
       await _loadAllData();
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('所有股票已更新，含 signals')),
+          SnackBar(content: Text('所有股票已更新 (本地模式)')),
         );
       }
     } catch (e) {
@@ -259,37 +259,10 @@ class _StockListPageState extends State<StockListPage> {
     });
   }
 
-  /// 用於顯示 stocks 裏的最後更新日期 (僅作參考)
-  String _formatLastUpdate(String? lastUpdateStr, String freq) {
-    if (lastUpdateStr == null) return '未更新';
-    DateTime dt;
-    try {
-      dt = DateTime.parse(lastUpdateStr);
-    } catch (e) {
-      return '格式錯誤';
-    }
-    if (freq == 'Week') {
-      DateTime monday = dt.subtract(Duration(days: dt.weekday - 1));
-      return '最後更新：${DateFormat('yyyy-MM-dd').format(monday)}';
-    } else {
-      return '最後更新：${DateFormat('yyyy-MM-dd HH:mm').format(dt)}';
-    }
-  }
-
-  /// 根據「單一 signal」(如 "闪电" or "钻石") 顯示對應 icon
-  Widget _buildSignalIcon(String? signal) {
-    if (signal == '闪电') {
-      return Icon(Icons.flash_on, color: Colors.green);
-    } else if (signal == '钻石') {
-      return Icon(Icons.diamond, color: Colors.red);
-    }
-    return Icon(Icons.do_not_disturb, color: Colors.grey);
-  }
-
-  /// 日期選擇器
+  /// 點擊日期選擇器 => 選了日期 => 直接從後端抓「當日有信號」列表
   Future<void> _pickDate() async {
-    DateTime initialDate = _selectedDate ?? DateTime.now();
-    final DateTime? picked = await showDatePicker(
+    final initialDate = _selectedDate ?? DateTime.now();
+    final picked = await showDatePicker(
       context: context,
       initialDate: initialDate,
       firstDate: DateTime(2000),
@@ -300,29 +273,85 @@ class _StockListPageState extends State<StockListPage> {
       setState(() {
         _selectedDate = picked;
       });
-      _applyFilter();
+      // 從伺服器抓當日訊號
+      await _fetchStocksBySelectedDate();
     }
   }
 
-  /// 清除所選日期 => 顯示所有股票(含無信號)
-  void _clearDate() {
+  /// 清除日期 => 回到本地 watchlist 資料
+  void _clearDate() async {
     setState(() {
       _selectedDate = null;
     });
-    _applyFilter();
+    await _loadAllData();
+  }
+
+  /// 顯示 stocks 的 lastUpdate
+  String _formatLastUpdate(String? lastUpdateStr, String freq) {
+    if (lastUpdateStr == null) return '未更新';
+    DateTime dt;
+    try {
+      dt = DateTime.parse(lastUpdateStr);
+    } catch (e) {
+      return '格式錯誤';
+    }
+    if (freq == 'Week') {
+      final monday = dt.subtract(Duration(days: dt.weekday - 1));
+      return '最後更新：${DateFormat('yyyy-MM-dd').format(monday)}';
+    } else {
+      return '最後更新：${DateFormat('yyyy-MM-dd HH:mm').format(dt)}';
+    }
+  }
+
+  /// 依 signal 顯示對應 icon
+  /// 如果同時有閃電+鑽石，就傳回 'both' => 用自訂 icon
+  Widget _buildSignalIcon(String? signal) {
+    switch (signal) {
+      case '闪电':
+        return Icon(Icons.flash_on, color: Colors.green);
+      case '钻石':
+        return Icon(Icons.diamond, color: Colors.red);
+      case 'both':
+        // 同時有閃電+鑽石 => 用 stars
+        return Icon(Icons.stars, color: Colors.purple);
+      default:
+        return Icon(Icons.do_not_disturb, color: Colors.grey);
+    }
+  }
+
+  /// 刪除本地 DB 中的股票
+  Future<void> _removeStock(int localId) async {
+    try {
+      await dbHelper.deleteStock(localId);
+      if (_selectedDate == null) {
+        // 未選日期 => 重新載本地
+        await _loadAllData();
+      } else {
+        // 已選日期 => 再次抓當日
+        await _fetchStocksBySelectedDate();
+      }
+    } catch (e) {
+      print('Error removing stock: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('刪除失敗: $e')),
+        );
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Stack(
       children: [
+        // 半透明遮罩區 (若 _isUpdating)
         IgnorePointer(
           ignoring: _isUpdating,
           child: Scaffold(
             appBar: AppBar(
               title: Text('Stocks (只顯示 watchlist)'),
               actions: [
-                // 一鍵更新
+                // 「更新」按鈕
                 IconButton(
                   icon: Icon(Icons.update),
                   onPressed: _isUpdating ? null : _updateAllStocks,
@@ -335,12 +364,18 @@ class _StockListPageState extends State<StockListPage> {
                     DropdownMenuItem(value: 'Day', child: Text('日線')),
                     DropdownMenuItem(value: 'Week', child: Text('週線')),
                   ],
-                  onChanged: (val) {
+                  onChanged: (val) async {
                     if (val != null) {
                       setState(() {
                         _filterFreq = val;
                       });
-                      _applyFilter();
+                      // 若未選日期 => 套用本地
+                      if (_selectedDate == null) {
+                        await _loadAllData();
+                      } else {
+                        // 已選日期 => 重新抓當日
+                        await _fetchStocksBySelectedDate();
+                      }
                     }
                   },
                   underline: SizedBox(),
@@ -350,15 +385,19 @@ class _StockListPageState extends State<StockListPage> {
                   value: _filterSignal,
                   items: [
                     DropdownMenuItem(value: 'All', child: Text('全部信號')),
-                    DropdownMenuItem(value: 'TD', child: Text('TD')),
-                    DropdownMenuItem(value: 'TS', child: Text('TS')),
+                    DropdownMenuItem(value: 'TD', child: Text('TD(閃電)')),
+                    DropdownMenuItem(value: 'TS', child: Text('TS(鑽石)')),
                   ],
-                  onChanged: (val) {
+                  onChanged: (val) async {
                     if (val != null) {
                       setState(() {
                         _filterSignal = val;
                       });
-                      _applyFilter();
+                      if (_selectedDate == null) {
+                        await _loadAllData();
+                      } else {
+                        await _fetchStocksBySelectedDate();
+                      }
                     }
                   },
                   underline: SizedBox(),
@@ -368,7 +407,7 @@ class _StockListPageState extends State<StockListPage> {
             ),
             body: Column(
               children: [
-                // 上方：日曆選擇 & 符合條件的數量
+                // 上方選擇日期 & 數量
                 Padding(
                   padding: const EdgeInsets.all(8.0),
                   child: Row(
@@ -401,52 +440,41 @@ class _StockListPageState extends State<StockListPage> {
                           itemCount: _filteredStocks.length,
                           itemBuilder: (ctx, i) {
                             final s = _filteredStocks[i];
-                            final localId = s['id'] as int;
-                            final freq = s['freq'] ?? 'Day';
-                            final formattedLastUpdate =
-                                _formatLastUpdate(s['lastUpdate'], freq);
 
-                            // 若沒選日期 => 顯示 stocks.signal
-                            // 若有選日期 => 顯示當日 matched signals (可能多筆)
-                            Widget leadingWidget;
-                            if (_selectedDate == null) {
-                              // 單一 icon (stocks.signal)
-                              leadingWidget = _buildSignalIcon(s['signal']);
-                            } else {
-                              // 多筆 icon
-                              final matchedSignals =
-                                  _signalsForDate[localId] ?? [];
-                              if (matchedSignals.isEmpty) {
-                                // 理論上不會發生，因為 matched.isNotEmpty 才留在清單
-                                leadingWidget = Icon(Icons.do_not_disturb,
-                                    color: Colors.grey);
-                              } else {
-                                final iconList = matchedSignals.map((ms) {
-                                  final sig = ms['signal'] as String?;
-                                  return Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 2.0),
-                                    child: _buildSignalIcon(sig),
-                                  );
-                                }).toList();
-                                leadingWidget = Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: iconList,
-                                );
-                              }
-                            }
+                            // 若是本地 stocks => 會有 id; 伺服器回傳 => 可能沒有 localId
+                            final localId = s['id'] as int?;
+                            final freq = (s['freq'] ?? 'Day').toString();
+                            final code = (s['code'] ?? '').toString();
+                            final name = (s['name'] ?? '').toString();
+                            final signal = s['signal']?.toString() ?? '';
+                            final tdCount = s['tdCount'] ?? 0;
+                            final tsCount = s['tsCount'] ?? 0;
+
+                            // lastUpdate 可能只有本地 stocks 才有
+                            final lastUpdateStr = s['lastUpdate']?.toString();
+                            final formattedLastUpdate =
+                                _formatLastUpdate(lastUpdateStr, freq);
 
                             return ListTile(
-                              leading: leadingWidget,
-                              title: Text('${s['name']} ($freq)'),
+                              leading: _buildSignalIcon(signal),
+                              title: Text('$name ($freq)'),
                               subtitle: Text(
-                                '${s['code']} / '
-                                'TD:${s['tdCount'] ?? 0}, TS:${s['tsCount'] ?? 0}\n'
-                                '$formattedLastUpdate',
+                                '$code / TD:$tdCount, TS:$tsCount\n$formattedLastUpdate',
                               ),
                               trailing: IconButton(
                                 icon: Icon(Icons.delete),
-                                onPressed: () => _removeStock(localId),
+                                onPressed: () {
+                                  if (localId != null) {
+                                    _removeStock(localId);
+                                  } else {
+                                    // 伺服器回傳、但本地不存在 => 不能刪
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('此股票不存在本地DB，無法刪除'),
+                                      ),
+                                    );
+                                  }
+                                },
                               ),
                               onTap: () {
                                 // 進入詳細頁
@@ -454,8 +482,8 @@ class _StockListPageState extends State<StockListPage> {
                                   context,
                                   MaterialPageRoute(
                                     builder: (_) => StockDetail(
-                                      stockCode: s['code'],
-                                      stockName: s['name'],
+                                      stockCode: code,
+                                      stockName: name,
                                       freq: freq,
                                     ),
                                   ),
