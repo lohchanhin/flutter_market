@@ -288,7 +288,7 @@ class _StockListPageState extends State<StockListPage> {
 
   /// 顯示 stocks 的 lastUpdate
   String _formatLastUpdate(String? lastUpdateStr, String freq) {
-    if (lastUpdateStr == null) return '未更新';
+    if (lastUpdateStr == null) return '歷史資料';
     DateTime dt;
     try {
       dt = DateTime.parse(lastUpdateStr);
