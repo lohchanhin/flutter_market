@@ -32,24 +32,55 @@ class MyApp extends StatelessWidget {
 
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
+
+  // 檢查帳號是否有效（刷新 token）
+  Future<bool> checkAccountStatus(User user) async {
+    try {
+      await user.getIdTokenResult(true); // 強制刷新 token
+      return true;
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'user-disabled' ||
+          e.code == 'user-token-expired' ||
+          e.code == 'user-not-found') {
+        await FirebaseAuth.instance.signOut();
+        return false;
+      }
+      rethrow;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
-        // 可根據需求加入載入指示器
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(
             body: Center(child: CircularProgressIndicator()),
           );
         }
-        if (snapshot.hasData && snapshot.data != null) {
-          // 若已登入，直接進入主頁面
-          return const MainNavigationPage();
-        } else {
-          // 否則呈現登入頁面
+
+        final user = snapshot.data;
+        if (user == null) {
           return const LoginPage();
         }
+
+        // 當 user 存在時，再進一步檢查是否仍有效
+        return FutureBuilder<bool>(
+          future: checkAccountStatus(user),
+          builder: (context, authSnapshot) {
+            if (authSnapshot.connectionState != ConnectionState.done) {
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (authSnapshot.data == true) {
+              return const MainNavigationPage();
+            } else {
+              return const LoginPage();
+            }
+          },
+        );
       },
     );
   }
