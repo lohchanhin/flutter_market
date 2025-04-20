@@ -1,3 +1,4 @@
+// lib/database/DatabaseHelper.dart
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -7,8 +8,8 @@ class DatabaseHelper {
 
   DatabaseHelper._init();
 
-  // === 由原先 v2 or v3, 升級至 v4 ===
-  static const int _dbVersion = 4;
+  // === 資料庫版本 ===
+  static const int _dbVersion = 5;
 
   Future<Database> get database async {
     if (_database != null) return _database!;
@@ -16,10 +17,10 @@ class DatabaseHelper {
     return _database!;
   }
 
+  // ─────────────────────────────────────────────────────────
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
-
     return await openDatabase(
       path,
       version: _dbVersion,
@@ -28,80 +29,89 @@ class DatabaseHelper {
     );
   }
 
-  // ======================
-  // 初次安裝 (onCreate)
-  // ======================
-  Future _onCreate(Database db, int version) async {
-    // 1) watchlist (使用者自訂清單，只需要 code, name)
+  // ============ 建表 ============
+  Future<void> _onCreate(Database db, int version) async {
     await db.execute('''
       CREATE TABLE watchlist (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        code TEXT NOT NULL,
-        name TEXT NOT NULL
+        id   INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT    NOT NULL,
+        name TEXT    NOT NULL
       )
     ''');
 
-    // 2) stocks (與後端同步: freq, signal, tdCount, tsCount, lastUpdate, serverId)
     await db.execute('''
       CREATE TABLE stocks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        serverId INTEGER,         -- 對應後端 stockId
-        code TEXT NOT NULL,
-        name TEXT NOT NULL,
-        freq TEXT,
-        signal TEXT,
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        serverId   INTEGER,
+        code       TEXT NOT NULL,
+        name       TEXT NOT NULL,
+        freq       TEXT,
+        signal     TEXT,
         lastUpdate TEXT,
-        tdCount INTEGER,
-        tsCount INTEGER
+        tdCount    INTEGER,
+        tsCount    INTEGER,
+        pai        REAL,
+        paiSignal  TEXT
       )
     ''');
 
-    // 3) signals (儲存多筆 signal 記錄)
     await db.execute('''
       CREATE TABLE signals (
-        id INTEGER PRIMARY KEY,   -- 直接使用後端的 signal id
-        stockId INTEGER,          -- 後端的 stockId (對應 stocks.serverId)
-        date TEXT,
-        signal TEXT,
-        tdCount INTEGER,
-        tsCount INTEGER,
-        createdAt TEXT
+        id         INTEGER PRIMARY KEY,
+        stockId    INTEGER,
+        date       TEXT,
+        signal     TEXT,
+        tdCount    INTEGER,
+        tsCount    INTEGER,
+        pai        REAL,
+        paiSignal  TEXT,
+        createdAt  TEXT
       )
     ''');
+
+    /// 建立索引提升查詢速度
+    await db.execute('CREATE INDEX idx_signals_stockId ON signals(stockId)');
+    await db.execute('CREATE INDEX idx_signals_date    ON signals(date)');
   }
 
-  // ======================
-  // 升級 (onUpgrade)
-  // ======================
-  Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // 若舊版 < 3，則需建立 signals 表
+  // ============ 升級 ============
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 3) {
+      // signals 表（舊版無 createdAt / PAI 欄位，先建最基本）
       await db.execute('''
-        CREATE TABLE signals (
-          id INTEGER PRIMARY KEY,
-          stockId INTEGER,
-          date TEXT,
-          signal TEXT,
-          tdCount INTEGER,
-          tsCount INTEGER,
+        CREATE TABLE IF NOT EXISTS signals (
+          id        INTEGER PRIMARY KEY,
+          stockId   INTEGER,
+          date      TEXT,
+          signal    TEXT,
+          tdCount   INTEGER,
+          tsCount   INTEGER,
           createdAt TEXT
         )
       ''');
     }
 
-    // 若舊版 < 4，則需在 stocks 表加上 serverId 欄位
     if (oldVersion < 4) {
-      try {
-        await db.execute('ALTER TABLE stocks ADD COLUMN serverId INTEGER');
-      } catch (e) {
-        print('ignore error: $e');
-      }
+      await _safeSql(db, "ALTER TABLE stocks ADD COLUMN serverId INTEGER");
+    }
+
+    if (oldVersion < 5) {
+      await _safeSql(db, "ALTER TABLE stocks  ADD COLUMN pai REAL");
+      await _safeSql(db, "ALTER TABLE stocks  ADD COLUMN paiSignal TEXT");
+      await _safeSql(db, "ALTER TABLE signals ADD COLUMN pai REAL");
+      await _safeSql(db, "ALTER TABLE signals ADD COLUMN paiSignal TEXT");
     }
   }
 
-  // ================================
-  // watchlist 表: 供 SearchPage 用
-  // ================================
+  /// 安全執行 ALTER，已存在欄位時忽略錯誤
+  Future<void> _safeSql(Database db, String sql) async {
+    try {
+      await db.execute(sql);
+    } catch (_) {}
+  }
+
+  // ─────────────────────────────────────────────────────────
+  /// ===== Watchlist =====
   Future<int> addToWatchlist(String code, String name) async {
     final db = await database;
     return db.insert('watchlist', {'code': code, 'name': name});
@@ -114,43 +124,40 @@ class DatabaseHelper {
 
   Future<int> deleteWatchlistByCode(String code) async {
     final db = await database;
-    return db.delete('watchlist', where: 'code=?', whereArgs: [code]);
+    return db.delete('watchlist', where: 'code = ?', whereArgs: [code]);
   }
 
-  // ================================
-  // stocks 表: 供 StockListPage 用
-  // ================================
-  // 新增 (含 freq, signal, tdCount, tsCount, lastUpdate, serverId)
+  // ─────────────────────────────────────────────────────────
+  /// ===== Stocks =====
   Future<int> addStock(Map<String, dynamic> row) async {
     final db = await database;
     return db.insert('stocks', row);
   }
 
-  // 取得全部 stocks
   Future<List<Map<String, dynamic>>> getStocks() async {
     final db = await database;
     return db.query('stocks');
   }
 
-  // 用 id 刪除
   Future<int> deleteStock(int id) async {
     final db = await database;
-    return db.delete('stocks', where: 'id=?', whereArgs: [id]);
+    return db.delete('stocks', where: 'id = ?', whereArgs: [id]);
   }
 
-  // 用 code 刪除 (包含該 code 下的所有 freq)
   Future<int> deleteStockByCode(String code) async {
     final db = await database;
-    return db.delete('stocks', where: 'code=?', whereArgs: [code]);
+    return db.delete('stocks', where: 'code = ?', whereArgs: [code]);
   }
 
-  // 更新 signal, tdCount, tsCount, lastUpdate
+  /// *** 修正版：7 個位置參數，和 UI 端呼叫一致 ***
   Future<int> updateStockSignal(
-    int id, // 本地 stocks.id
+    int id,
     String? signal,
     String lastUpdate,
     int tdCount,
     int tsCount,
+    num? pai,
+    String? paiSignal,
   ) async {
     final db = await database;
     return db.update(
@@ -160,14 +167,14 @@ class DatabaseHelper {
         'lastUpdate': lastUpdate,
         'tdCount': tdCount,
         'tsCount': tsCount,
+        if (pai != null) 'pai': pai,
+        if (paiSignal != null) 'paiSignal': paiSignal,
       },
-      where: 'id=?',
+      where: 'id = ?',
       whereArgs: [id],
     );
   }
 
-  // 批次更新 (for "updateAllStocks")
-  // 需注意: 這裡傳入 item['id'] 是本地 stocks.id
   Future<void> batchUpdateStocks(List<Map<String, dynamic>> updates) async {
     final db = await database;
     await db.transaction((txn) async {
@@ -179,97 +186,142 @@ class DatabaseHelper {
             'lastUpdate': item['lastUpdate'],
             'tdCount': item['tdCount'],
             'tsCount': item['tsCount'],
+            if (item['pai'] != null) 'pai': item['pai'],
+            if (item['paiSignal'] != null) 'paiSignal': item['paiSignal'],
           },
-          where: 'id=?',
+          where: 'id = ?',
           whereArgs: [item['id']],
         );
       }
     });
   }
 
-  // 新增/更新 stocks 的 serverId
   Future<int> updateStockServerId(int localId, int serverId) async {
     final db = await database;
     return db.update(
       'stocks',
       {'serverId': serverId},
-      where: 'id=?',
+      where: 'id = ?',
       whereArgs: [localId],
     );
   }
 
-  // ================================
-  // signals 表: 儲存多筆 signal 記錄
-  // ================================
-  // 單筆插入 (若想 upsert，可 conflictAlgorithm: replace)
+  // ─────────────────────────────────────────────────────────
+  /// ===== Signals =====
   Future<int> insertSignal(Map<String, dynamic> row) async {
     final db = await database;
-    return db.insert(
-      'signals',
-      row,
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    return db.insert('signals', row,
+        conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  // 批次插入 / 更新 signals
-  Future<void> batchInsertSignals(List<Map<String, dynamic>> signalList) async {
+  Future<void> batchInsertSignals(List<Map<String, dynamic>> list) async {
     final db = await database;
     await db.transaction((txn) async {
-      for (var signalData in signalList) {
-        await txn.insert(
-          'signals',
-          signalData,
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
+      for (var row in list) {
+        await txn.insert('signals', row,
+            conflictAlgorithm: ConflictAlgorithm.replace);
       }
     });
   }
 
-  // 根據 stockId (後端 id) 刪除該股票所有 signals
   Future<int> deleteSignalsByStockId(int stockId) async {
     final db = await database;
     return db.delete('signals', where: 'stockId = ?', whereArgs: [stockId]);
   }
 
-  // 讀取某個 stockId (後端 id) 的所有 signals
   Future<List<Map<String, dynamic>>> getSignalsByStockId(int stockId) async {
     final db = await database;
     return db.query('signals', where: 'stockId = ?', whereArgs: [stockId]);
   }
 
-  // 範例: 依某些條件 (如 date, signal) 讀取 signals
+  /// 取得指定股票 code 最近 N 筆 TD / TS
+  Future<List<Map<String, dynamic>>> getRecentTDTSByCode(
+    String code, {
+    int limit = 7,
+  }) async {
+    final db = await database;
+    final rows = await db.query(
+      'stocks',
+      columns: ['serverId', 'id'],
+      where: 'code = ?',
+      whereArgs: [code],
+      limit: 1,
+    );
+    if (rows.isEmpty) return [];
+
+    final serverId = rows.first['serverId'] as int?;
+    final idToUse = serverId ?? rows.first['id'];
+
+    return db.rawQuery(
+      '''
+      SELECT * FROM signals
+      WHERE stockId = ?
+        AND (signal = '闪电' OR signal = '钻石')
+      ORDER BY date DESC
+      LIMIT ?
+      ''',
+      [idToUse, limit],
+    );
+  }
+
   Future<List<Map<String, dynamic>>> getSignalsByFilter({
     int? stockId,
     String? signal,
     DateTime? date,
   }) async {
     final db = await database;
-    final whereClauses = <String>[];
-    final whereArgs = <dynamic>[];
+
+    final where = <String>[];
+    final args = <dynamic>[];
 
     if (stockId != null) {
-      whereClauses.add('stockId = ?');
-      whereArgs.add(stockId);
+      where.add('stockId = ?');
+      args.add(stockId);
     }
     if (signal != null) {
-      whereClauses.add('signal = ?');
-      whereArgs.add(signal);
+      where.add('signal = ?');
+      args.add(signal);
     }
     if (date != null) {
-      // 比較日期 (不含時間) 的最簡易做法：直接比對 'yyyy-MM-dd'
-      final dateStr = date.toIso8601String().split('T').first;
-      whereClauses.add('date = ?');
-      whereArgs.add(dateStr);
+      where.add('date = ?');
+      args.add(date.toIso8601String().split('T').first);
     }
 
-    final whereString =
-        whereClauses.isEmpty ? null : whereClauses.join(' AND ');
-    return db.query('signals', where: whereString, whereArgs: whereArgs);
+    final whereStr = where.isEmpty ? null : where.join(' AND ');
+    return db.query('signals', where: whereStr, whereArgs: args);
   }
 
-  // 關閉資料庫
-  Future close() async {
+  // 新增
+  /// 回傳最近一次 TD / TS 信號日期
+  Future<DateTime?> getLatestTDTSDateByCode(String code) async {
     final db = await database;
-    db.close();
+    final rows = await db.query(
+      'stocks',
+      columns: ['serverId', 'id'],
+      where: 'code = ?',
+      whereArgs: [code],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+
+    final stockId = rows.first['serverId'] ?? rows.first['id'];
+    final res = await db.rawQuery(
+      '''
+    SELECT date FROM signals
+    WHERE stockId = ?
+      AND (signal = '闪电' OR signal = '钻石')
+    ORDER BY date DESC
+    LIMIT 1
+    ''',
+      [stockId],
+    );
+    if (res.isEmpty) return null;
+    return DateTime.parse(res.first['date'] as String);
+  }
+
+  // ─────────────────────────────────────────────────────────
+  Future<void> close() async {
+    final db = await database;
+    await db.close();
   }
 }
