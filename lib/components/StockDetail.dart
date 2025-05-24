@@ -28,9 +28,8 @@ class _StockDetailState extends State<StockDetail> {
   List<StockData> _historyList = [];
   List<StockData> signalDays = [];
 
-  // 請將下列 token 改成正確的 FinMind API Token
-  final String finmindToken =
-      'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNS0wMi0xOCAwMToyOTo1NyIsInVzZXJfaWQiOiJsb2hjaGFuaGluIiwiaXAiOiIzNi4yMjUuMTU3LjEwIn0.u03i4v1534gBBKs_PoiocZ7_M-R6pepZ8GBGaEKgwyA';
+  /// FinMind API Token\uff0c\u8acb\u901a\u904e `--dart-define=FINMIND_TOKEN=...` \u63d0\u4f9b
+  final String finmindToken = const String.fromEnvironment('FINMIND_TOKEN');
 
   @override
   void initState() {
